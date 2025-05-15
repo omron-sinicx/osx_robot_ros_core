@@ -1,0 +1,61 @@
+single_or_dual: 'single'
+episode_idx: 
+
+active_robot: 'b_bot'
+delta_actions: False
+control_frequency: 50
+camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+max_force_torque: [50., 50., 50., 5., 5., 5.]
+ 
+compliant_controller:
+  p_gains: [0.06, 0.06, 0.06, 1.5, 1.5, 3.0] # stiff: [0.06, 0.06, 0.06, 1.5, 1.5, 1.5]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  iterations: 1.0
+  stiffness_limits:
+    translation: [50, 600]
+    rotation: [10, 50]
+
+pic_configuration:
+  b_bot: [1.5701, -2.1001, 1.4001, -0.8501, -1.57, -0.0]
+  a_bot: [1.8773, -1.3922, 1.5748, -1.7854, -1.6063, 1.8437]
+ 
+ 
+initial_configuration:
+  # b_bot: [1.4154, -2.1438, 2.1225, -1.5317, -1.558, -0.2658] # joint configuration or named pose
+  b_bot: [1.7106, -1.367, 1.8128, -1.7947, -2.5085, -1.284] # pose just before pulley insertion
+  a_bot: 'home' # joint configuration or named pose
+ 
+task_parameters:
+  dataset_dir: '/root/osx-ur/act/datasets/pulley_insertion'
+  ckpt_dir: '/root/osx-ur/act/rollouts/pulley_insertion'
+  num_episodes: 20
+  episode_len: 10000
+  camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+  is_cartesian: True
+  flip_gripper: True # Start with gripper closed
+ 
+policy_parameters:
+  bimanual: False
+  state_dim: 19
+  policy_class: ACT
+  seed: 1
+  lr: 5.0e-5
+  batch_size: 64
+  chunk_size: 10
+  kl_weight: 10
+  num_epochs: 50000
+  hidden_dim: 512
+  dim_feedforward: 3200
+  lr_backbone: 1.0e-5
+  backbone: 'resnet18'
+  enc_layers: 4
+  dec_layers: 7
+  nheads: 8
+  camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+  temporal_agg: True
+  num_queries: 10
+  include_stiffness: True
+  ft: True
+  cartesian: True
+  loss_type: l1

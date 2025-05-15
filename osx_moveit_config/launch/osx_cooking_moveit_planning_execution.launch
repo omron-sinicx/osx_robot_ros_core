@@ -1,0 +1,29 @@
+<launch>
+  <arg name="sim" default="false" />
+  <arg name="debug" default="false" />
+  <arg name="config" default="$(find osx_moveit_config)/launch/moveit.rviz" />
+  <arg name="collision_config_file" default="$(find osx_moveit_config)/config/cooking_scene_collisions.xacro" />
+
+  <!-- osx parameter -->
+  <param name="use_real_robot" type="bool" value="$(eval not sim)" />
+
+  <!-- Set joint start tolerance to 0.0 for both grippers to avoid validation errors -->
+  <param name="/move_group/trajectory_execution/joints_allowed_start_tolerance/a_bot_finger_joint" type="double" value="0.0" />
+  <param name="/move_group/trajectory_execution/joints_allowed_start_tolerance/b_bot_finger_joint" type="double" value="0.0" />
+    
+  <!-- Remap follow_joint_trajectory -->
+  <remap if="$(arg sim)" from="/follow_joint_trajectory" to="/arm_controller/follow_joint_trajectory"/>
+  
+  <!-- Launch moveit -->
+  <include file="$(find osx_moveit_config)/launch/move_group.launch">
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="sim" value="$(arg sim)" />
+    <arg name="collision_config_file" value="$(arg collision_config_file)" />
+  </include>
+
+  <!-- Launch moveit with rviz -->
+  <include file="$(find osx_moveit_config)/launch/moveit_rviz.launch">
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="rviz_config" value="$(arg config)" />
+  </include>
+</launch>

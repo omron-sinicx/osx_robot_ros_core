@@ -1,0 +1,36 @@
+<launch>
+  <!-- By default we do not overwrite the URDF. Change the following to true to change the default behavior -->
+  <arg name="load_robot_description" default="false"/>
+
+  <!-- The name of the parameter under which the URDF is loaded -->
+  <arg name="robot_description" default="robot_description"/>
+
+  <!-- Load universal robot description format (URDF) -->
+  <param if="$(arg load_robot_description)" name="$(arg robot_description)" 
+         command="xacro  '$(find osx_scene_description)/urdf/base_scene.urdf.xacro'"/>
+
+  <!-- Path to the collision configuration file, if not provided, default collisions will be used -->
+  <arg name="collision_config_file" default=""/>
+  
+  <!-- Load SRDF -->
+  <!-- default config -->
+  <param if="$(eval collision_config_file=='')" name="$(arg robot_description)_semantic" textfile="$(find osx_moveit_config)/config/osx_base_scene.srdf"/>
+  
+  <!-- custom config -->
+  <param unless="$(eval collision_config_file=='')" name="$(arg robot_description)_semantic" 
+         command="xacro collision_config_file:=$(arg collision_config_file)
+                  '$(find osx_moveit_config)/config/osx_base_scene.srdf.xacro'" />
+  
+  <!-- Load updated joint limits (override information from URDF) -->
+  <group ns="$(arg robot_description)_planning">
+    <rosparam command="load" file="$(find osx_moveit_config)/config/joint_limits.yaml"/>
+    <rosparam command="load" file="$(find osx_moveit_config)/config/cartesian_limits.yaml"/>
+  </group>
+
+  <!-- Load default settings for kinematics; these settings are overridden by settings in a node's namespace -->
+  <group ns="$(arg robot_description)_kinematics">
+    <rosparam command="load" file="$(find osx_moveit_config)/config/kinematics.yaml"/>
+
+  </group>
+
+</launch>

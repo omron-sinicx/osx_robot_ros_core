@@ -1,0 +1,54 @@
+active_robot: 'b_bot'
+delta_actions: False
+control_frequency: 50
+camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+max_force_torque: [50., 50., 50., 5., 5., 5.]
+ 
+compliant_controller:
+  p_gains: [0.035, 0.035, 0.035, 0.5, 0.5, 0.5]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  iterations: 1.0
+  stiffness_limits:
+    translation: [50, 1500]
+    rotation: [10, 500]
+ 
+initial_configuration:
+  b_bot: [1.2921, -1.4561, 1.7485, -1.8627, -1.5648, -1.7876] # joint configuration or named pose
+  a_bot: [2.1416, -1.9695, 2.5576, -2.6435, -2.0783, 0.7408] # joint configuration or named pose
+ 
+task_parameters:
+  dataset_dir: '/root/osx-ur/datasets/comp-act/b_bot_wiping_v5'
+  ckpt_dir: '/root/osx-ur/dependencies/rollouts/b_bot_wiping_v5/ft'
+  num_episodes: 20
+  episode_len: 700
+  camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+  is_cartesian: True
+  flip_gripper: True # Start with gripper closed
+ 
+policy_parameters:
+  bimanual: False
+  state_dim: 19
+  robot_state_dim: 7
+  policy_class: ACT
+  lr: 5.0e-5
+  hidden_dim: 512
+  dim_feedforward: 3200
+  lr_backbone: 1.0e-5
+  backbone: 'resnet18'
+  enc_layers: 4
+  dec_layers: 7
+  nheads: 8
+  seed: 1
+  kl_weight: 100
+  batch_size: 8
+  num_epochs: 100000
+  chunk_size: 100
+  num_queries: 100
+  camera_names: ['a_bot_outside_camera'] # ignore b_bot camera
+  temporal_agg: True
+  include_ft: True
+  ft_as_obs: False
+  loss_type: l1
+  include_stiffness: True
+  action_space: 'cartesian'

@@ -1,0 +1,120 @@
+active_robots: ['b_bot']
+delta_actions: False
+control_frequency: 50
+camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+max_force_torque: [50., 50., 50., 10., 10., 10.]
+
+compliant_controller:
+  p_gains: [0.035, 0.035, 0.035, 0.5, 0.5, 0.5]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  iterations: 1.0
+  stiffness_limits:
+    translation: [50, 1500]
+    rotation: [10, 1000]
+
+initial_configuration:
+  a_bot: [0.4265, -1.8771, 2.4436, -2.2618, -1.2943, -1.1482] # joint configuration or named pose
+  b_bot: [1.806, -1.6485, 2.018, -2.0719, -1.5983, 0.2181] # joint configuration or named pose
+ 
+task_parameters:
+  dataset_dir: '/root/osx-ur/dependencies/datasets/comp-act/b_bot_pencil_eraser'
+  ckpt_dir: '/root/osx-ur/dependencies/rollouts/b_bot_pencil_eraser'
+  num_episodes: 30
+  episode_len: 3000
+  camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+  is_cartesian: True
+  flip_gripper: True
+  stiffness_configuration:
+    modes:
+      position: 
+        low: [200, 200, 200.]
+        normal: [800, 800, 800.]
+        high: [1200, 1200, 1200.]
+      rotation:
+        low: [100, 100, 100.]
+        normal: [150, 150, 150.]
+        high: [300, 300, 300.]
+    b_bot: ['high', 'normal'] # from normal to high when switching
+    # b_bot: ['normal', 'high'] # from normal to high when switching
+  stiffness_representation: 'diag' # or 'cholesky'
+  orientation_representation: 'ortho6' # or 'axis_angle'
+ 
+policy_parameters:
+  bimanual: False
+  action_dim: 16 # diag ortho6
+  state_dim: 10 # ortho6
+  ft_dim: 6
+  policy_class: ACT
+  lr: 5.0e-5
+  hidden_dim: 512
+  dim_feedforward: 3200
+  lr_backbone: 1.0e-5
+  backbone: 'resnet18'
+  enc_layers: 4
+  dec_layers: 7
+  nheads: 8
+  seed: 1
+  kl_weight: 100
+  batch_size: 8
+  num_epochs: 200000
+  chunk_size: 100
+  num_queries: 100
+  camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+  temporal_agg: True
+  include_ft: True
+  ft_as_obs: False
+  loss_type: l1
+  include_stiffness: True
+  action_space: 'cartesian'
+  # Define the keys and expected length of each array 
+  training_data:
+    observation_keys: [observation.eef_pos.position, observation.eef_pos.rotation_ortho6, observation.eef_pos.gripper]
+    input_shapes:
+      observation.eef_pos.position: [6]
+      observation.eef_pos.rotation_ortho6: [12]
+      observation.eef_pos.gripper: [2]
+      observation.ft: [12]
+
+    input_normalization_modes:
+      observation.eef_pos.position: mean_std
+      observation.eef_pos.rotation_ortho6: min_max
+      observation.eef_pos.gripper: mean_std
+      observation.ft: mean_std
+
+    output_shapes: # order matters, so position and rotation first
+      action.position: [3]
+      action.rotation_ortho6: [6]
+      action.gripper: [1]
+      action.stiffness_diag: [6]
+
+    output_normalization_modes:
+      action.position: mean_std
+      action.rotation_ortho6: min_max
+      action.gripper: mean_std
+      action.stiffness_diag: mean_std
+
+vr_config:
+  b_bot:
+    controller:
+      name: 'right_controller'
+      frame_id: 'world'
+      tracking_mode: 'controller_pose'
+
+    robot:
+      namespace: 'b_bot'
+      base_frame: 'b_bot_base_link'
+      end_effector_frame: 'b_bot_gripper_tip_link'
+      ft_sensor_frame: 'b_bot_wrist_3_link'
+      world_frame: 'world' # if defined, orient target pose around common world frame
+
+    topics:
+      wrench: '/b_bot/wrench'
+
+    safety:
+      play_area: [0.5, 0.5, 0.5, 45, 45, 90] # Units: meters for translation, degrees for orientation
+      max_contact_force_torque: [50., 50., 50., 5., 5., 5.]
+      scale_velocities: [1., 1., 1., 1., 1., 1.]
+      scale_translation: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      max_delta_translation: 0.05 # m
+      max_delta_rotation: [5.0, 5.0, 15.0] # degrees

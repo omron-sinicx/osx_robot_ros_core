@@ -1,0 +1,52 @@
+active_robot: 'b_bot'
+delta_actions: False
+control_frequency: 50
+camera_names: ['wrist_camera', 'extra_camera']
+max_force_torque: [50., 50., 50., 5., 5., 5.]
+ 
+compliant_controller:
+  p_gains: [0.035, 0.035, 0.035, 1.5, 1.5, 1.5]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  iterations: 1.0
+  stiffness_limits:
+    translation: [100, 600]
+    rotation: [10, 50]
+ 
+initial_configuration:
+  b_bot: [1.4154, -2.1438, 2.1225, -1.5317, -1.558, -0.2658] # joint configuration or named pose
+  a_bot: 'home' # joint configuration or named pose
+ 
+task_parameters:
+  dataset_dir: '/root/osx-ur/act/datasets/b_bot_simple_pick'
+  ckpt_dir: '/root/osx-ur/act/rollouts/b_bot_simple_pick'
+  num_episodes: 4
+  episode_len: 700
+  camera_names: ['wrist_camera', 'extra_camera']
+  is_cartesian: True
+ 
+policy_parameters:
+  bimanual: False
+  state_dim: 19
+  policy_class: ACT
+  seed: 1
+  lr: 5.0e-5
+  batch_size: 64
+  chunk_size: 10
+  kl_weight: 10
+  num_epochs: 20000
+  hidden_dim: 512
+  dim_feedforward: 3200
+  lr_backbone: 1.0e-5
+  backbone: 'resnet18'
+  enc_layers: 4
+  dec_layers: 7
+  nheads: 8
+  # camera_names: ['wrist_camera', 'extra_camera']
+  camera_names: ['extra_camera']
+  temporal_agg: True
+  num_queries: 10
+  include_stiffness: True
+  ft: True
+  cartesian: True
+  loss_type: l1

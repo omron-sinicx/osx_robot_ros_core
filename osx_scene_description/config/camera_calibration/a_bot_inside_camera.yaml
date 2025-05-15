@@ -1,0 +1,11 @@
+calibration_date: Tue Mar 19 14:23:45 2025
+child: a_bot_inside_camera_color_optical_frame
+parent: a_bot_ee_link
+transform:
+  qw: 0.36897095991451956
+  qx: -0.5941510839742227
+  qy: 0.6094778457754715
+  qz: -0.373338553676023
+  x: 0.065
+  y: 0.035
+  z: 0.065

@@ -1,0 +1,26 @@
+active_robot: 'b_bot'
+delta_actions: True
+control_frequency: 50
+camera_names: ['wrist_camera', 'extra_camera']
+max_force_torque: [50., 50., 50., 5., 5., 5.]
+
+compliant_controller:
+  p_gains: [0.035, 0.035, 0.035, 1.5, 1.5, 1.5]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  iterations: 1.0
+  stiffness_limits:
+    translation: [100, 600]
+    rotation: [10, 50]
+
+initial_configuration:
+  a_bot: 'home' # joint configuration or named pose
+  b_bot: 'home' # joint configuration or named pose
+  # a_bot_gripper: None
+  # b_bot_gripper: None
+
+task_parameters: 
+  dataset_dir: '~/osx-ur/datasets/test'
+  num_episodes: 50
+  episode_len: 500
+  camera_names: [] #['wrist_camera', 'extra_camera']

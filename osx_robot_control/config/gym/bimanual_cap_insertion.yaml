@@ -1,0 +1,51 @@
+delta_actions: False
+control_frequency: 50
+camera_names: ['a_bot_inside_camera', 'b_bot_inside_camera', 'extra_camera']
+max_force_torque: [50., 50., 50., 5., 5., 5.]
+ 
+compliant_controller:
+  p_gains: [0.035, 0.035, 0.035, 1.5, 1.5, 1.5]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  iterations: 1.0
+  stiffness_limits:
+    translation: [100, 600]
+    rotation: [10, 50]
+ 
+initial_configuration:
+  b_bot: [1.572, -2.1041, 1.8834, -1.6228, -1.5715, 0.0014] # joint configuration or named pose
+  a_bot: [0.5612, -2.4469, 1.891, -1.2254, -1.2862, -0.9746] # joint configuration or named pose
+ 
+task_parameters:
+  dataset_dir: '/root/osx-ur/act/datasets/bimanual_cap_insertion'
+  ckpt_dir: '/root/osx-ur/act/rollouts/bimanual_cap_insertion'
+  num_episodes: 10
+  episode_len: 2000
+  camera_names: ['a_bot_inside_camera', 'b_bot_inside_camera', 'extra_camera']
+  is_cartesian: True
+  flip_gripper: True
+ 
+policy_parameters:
+  bimanual: True
+  state_dim: 38
+  policy_class: ACT
+  seed: 1
+  lr: 5.0e-5
+  batch_size: 64
+  chunk_size: 10
+  kl_weight: 10
+  num_epochs: 50000
+  hidden_dim: 512
+  dim_feedforward: 3200
+  lr_backbone: 1.0e-5
+  backbone: 'resnet18'
+  enc_layers: 4
+  dec_layers: 7
+  nheads: 8
+  camera_names: ['a_bot_inside_camera', 'b_bot_inside_camera', 'extra_camera']
+  temporal_agg: True
+  num_queries: 10
+  include_stiffness: True
+  ft: True
+  cartesian: True
+  loss_type: l1

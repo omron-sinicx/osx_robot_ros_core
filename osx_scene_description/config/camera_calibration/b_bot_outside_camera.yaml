@@ -1,0 +1,11 @@
+calibration_date: Tue Mar 19 14:23:45 2025
+child: b_bot_outside_camera_color_optical_frame
+parent: b_bot_ee_link
+transform:
+  qw: 0.5041919302369656
+  qx: -0.48689248737814905
+  qy: 0.49546539473859164
+  qz: -0.5130694356860223
+  x: 0.065
+  y: 0.045
+  z: 0.103

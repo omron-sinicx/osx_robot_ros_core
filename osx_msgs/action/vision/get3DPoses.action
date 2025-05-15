@@ -1,0 +1,11 @@
+# Called when the camera looks at the tray. Returns the 3D poses 
+
+# Request
+string location
+
+---
+# Result
+osx_msgs/Estimated3DPoses[] results
+
+---
+# Feedback

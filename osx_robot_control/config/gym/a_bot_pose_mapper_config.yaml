@@ -1,0 +1,24 @@
+controller:
+  name: 'left_controller'
+  frame_id: 'world'
+  tracking_mode: 'controller_pose'
+
+robot:
+  namespace: 'a_bot'
+  base_frame: 'a_bot_base_link'
+  end_effector_frame: 'a_bot_gripper_tip_link'
+  ft_sensor_frame: 'a_bot_wrist_3_link'
+  world_frame: 'world' # if defined, rotate controller pose from world -> robot base
+
+topics:
+  wrench: '/a_bot/wrench'
+
+safety:
+  play_area: [0.5, 0.5, 0.5, 45, 45, 90] # Units: meters for translation, degrees for orientation
+  max_contact_force_torque: [50., 50., 50., 5., 5., 5.]
+  scale_velocities: [1., 1., 1., 1., 1., 1.]
+  # scale_translation: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+  # scale_translation: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+  scale_translation: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  max_delta_translation: 0.05 # m
+  max_delta_rotation: [5.0, 5.0, 15.0] # degrees

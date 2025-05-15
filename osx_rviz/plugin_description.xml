@@ -1,0 +1,9 @@
+<library path="lib/libosx_rviz">
+  <class name="osx/osxSetupPanel"
+         type="osx_rviz::osxSetupPanel"
+         base_class_type="rviz::Panel">
+    <description>
+      Simple commands to setup and debug the osx WRS system
+    </description>
+  </class>
+</library>

@@ -1,0 +1,81 @@
+active_robot: 'b_bot'
+delta_actions: False
+control_frequency: 50
+camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+max_force_torque: [50., 50., 50., 5., 5., 5.]
+ 
+compliant_controller:
+  p_gains: [0.035, 0.035, 0.035, 1.5, 1.5, 1.5]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  iterations: 1.0
+  stiffness_limits:
+    translation: [100, 600]
+    rotation: [10, 50]
+ 
+initial_configuration:
+  b_bot: [1.4154, -2.1438, 2.1225, -1.5317, -1.558, -0.2658] # joint configuration or named pose
+  a_bot: [-0.4073, -2.4712, 2.5226, -1.138, -0.7478, -2.1903] # joint configuration or named pose
+ 
+task_parameters:
+  dataset_dir: '/root/osx-ur/act/datasets/b_bot_toy_insertion_v3'
+  ckpt_dir: '/root/osx-ur/act/rollouts/b_bot_toy_insertion'
+  num_episodes: 4
+  episode_len: 800
+  camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+  is_cartesian: True
+  flip_gripper: False
+ 
+policy_parameters:
+  bimanual: False
+  stiffness_representation: 'diag' # or 'cholesky'
+  orientation_representation: 'ortho6' # or 'axis_angle'
+  state_dim: 16 # diag ortho6
+  robot_state_dim: 10 # ortho6
+  policy_class: ACT
+  lr: 5.0e-5
+  hidden_dim: 512
+  dim_feedforward: 3200
+  lr_backbone: 1.0e-5
+  backbone: 'resnet18'
+  enc_layers: 4
+  dec_layers: 7
+  nheads: 8
+  seed: 1
+  kl_weight: 100
+  batch_size: 8
+  num_epochs: 50000
+  chunk_size: 100
+  num_queries: 100
+  camera_names: ['a_bot_outside_camera', 'b_bot_inside_camera']
+  temporal_agg: True
+  include_ft: True
+  ft_as_obs: False
+  loss_type: l1
+  include_stiffness: True
+  action_space: 'cartesian'
+
+vr_config:
+  b_bot:
+    controller:
+      name: 'right_controller'
+      frame_id: 'world'
+      tracking_mode: 'controller_pose'
+
+    robot:
+      namespace: 'b_bot'
+      base_frame: 'b_bot_base_link'
+      end_effector_frame: 'b_bot_gripper_tip_link'
+      ft_sensor_frame: 'b_bot_wrist_3_link'
+      world_frame: 'world' # if defined, orient target pose around common world frame
+
+    topics:
+      wrench: '/b_bot/wrench'
+
+    safety:
+      play_area: [0.5, 0.5, 0.5, 45, 45, 90] # Units: meters for translation, degrees for orientation
+      max_contact_force_torque: [50., 50., 50., 5., 5., 5.]
+      scale_velocities: [1., 1., 1., 1., 1., 1.]
+      scale_translation: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      max_delta_translation: 0.05 # m
+      max_delta_rotation: [5.0, 5.0, 15.0] # degrees

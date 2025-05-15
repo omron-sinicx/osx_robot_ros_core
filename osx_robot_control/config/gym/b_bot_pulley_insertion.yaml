@@ -1,0 +1,70 @@
+active_robot: 'b_bot'
+delta_actions: False
+control_frequency: 50
+# camera_names: ['wrist_camera', 'extra_camera']
+camera_names: ['b_bot_inside_camera']
+
+max_force_torque: [50., 50., 50., 5., 5., 5.]
+ 
+compliant_controller:
+  p_gains: [0.035, 0.035, 0.035, 0.2, 0.2, 0.5]
+  # p_gains: [0.1, 0.1, 0.1, 2.0, 2.0, 3.0]  # flex
+  # p_gains: [0.05, 0.05, 0.05, 1.5, 1.5, 2.0]  # flex
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.8
+  # error_scale: 1.0
+  iterations: 1.0
+  stiffness_limits:
+    translation: [50, 1500]
+    rotation: [10, 50]
+
+pic_configuration:
+  b_bot: [1.5701, -2.1001, 1.4001, -0.8501, -1.57, -0.0]
+  a_bot: [1.8773, -1.3922, 1.5748, -1.7854, -1.6063, 1.8437]
+ 
+initial_configuration:
+  # b_bot: [1.4154, -2.1438, 2.1225, -1.5317, -1.558, -0.2658] # joint configuration or named pose
+  # b_bot: [1.7106, -1.367, 1.8128, -1.7947, -2.5085, -1.284] # pose just before pulley insertion
+  b_bot: [1.6963, -1.1947, 1.7025, -1.8751, -2.5121, -1.3056] # pulley insertion (easier)
+  # b_bot: 'home' # joint configuration or named pose
+  a_bot: 'home' # joint configuration or named pose
+  # a_bot: [0.5616, -2.4457, 1.8921, -1.2245, -1.2846, -0.3727]
+ 
+task_parameters:
+  # dataset_dir: '/root/osx-ur/datasets/b_bot_simple'
+  dataset_dir: '/root/osx-ur/act/datasets/b_bot_simple_pick'
+  # ckpt_dir: '/root/osx-ur/rollouts/b_bot_simple'
+  ckpt_dir: '/root/osx-ur/act/rollouts/b_bot_simple_pick_2'
+  num_episodes: 4
+  episode_len: 10000
+  # camera_names: ['wrist_camera', 'extra_camera']
+  camera_names: ['wrist_camera']
+
+  is_cartesian: True
+  flip_gripper: True
+ 
+policy_parameters:
+  bimanual: False
+  state_dim: 19
+  policy_class: ACT
+  seed: 1
+  lr: 5.0e-5
+  batch_size: 64
+  chunk_size: 10
+  kl_weight: 10
+  num_epochs: 50000
+  hidden_dim: 512
+  dim_feedforward: 3200
+  lr_backbone: 1.0e-5
+  backbone: 'resnet18'
+  enc_layers: 4
+  dec_layers: 7
+  nheads: 8
+  # camera_names: ['wrist_camera', 'extra_camera']
+  camera_names: ['extra_camera']
+  temporal_agg: True
+  num_queries: 10
+  include_stiffness: True
+  ft: True
+  cartesian: True
+  loss_type: l1
