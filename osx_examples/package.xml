@@ -39,6 +39,8 @@
 
   <run_depend>ur_msgs</run_depend>
   <build_depend>ur_msgs</build_depend>
+  <run_depend>ur_control</run_depend>
+  <build_depend>ur_control</build_depend>
 
   <build_depend>message_generation</build_depend>
   
