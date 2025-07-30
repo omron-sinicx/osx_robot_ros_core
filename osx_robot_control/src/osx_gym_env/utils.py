@@ -60,12 +60,10 @@ class ImageRecorder:
 
 def compute_eef_velocity(current_pose, previous_pose, dt):
     """
-        Assume that the poses are given as [x,y,z] + [axis_angle(3)]
+        Assume that the poses are given as [x,y,z] + [quat(4)]
     """
-    previous_orientation = transformations.quaternion_from_axis_angle(previous_pose[3:])
-    current_orientation = transformations.quaternion_from_axis_angle(current_pose[3:])
     linear_velocity = (current_pose[:3] - previous_pose[:3]) / dt
-    angular_velocity = transformations.angular_velocity_from_quaternions(current_orientation, previous_orientation, dt)
+    angular_velocity = transformations.angular_velocity_from_quaternions(current_pose[3:], previous_pose[3:], dt)
     return np.concatenate((linear_velocity, angular_velocity))
 
 
