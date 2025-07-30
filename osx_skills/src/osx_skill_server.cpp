@@ -1453,10 +1453,10 @@ bool SkillServer::suckScrew(geometry_msgs::PoseStamped screw_head_pose,
     return false;
   }
 
-  if (screw_tool_id == "screw_tool_m3")
-    planning_scene_interface_.allowCollisions(screw_tool_id, "m3_feeder_link");
-  else if (screw_tool_id == "screw_tool_m4")
-    planning_scene_interface_.allowCollisions(screw_tool_id, "m4_feeder_link");
+  // if (screw_tool_id == "screw_tool_m3")
+  //   planning_scene_interface_.allowCollisions(screw_tool_id, "m3_feeder_link");
+  // else if (screw_tool_id == "screw_tool_m4")
+  //   planning_scene_interface_.allowCollisions(screw_tool_id, "m4_feeder_link");
 
   auto adjusted_pose = above_screw_head_pose_;
   auto search_start_pose = above_screw_head_pose_;
@@ -1517,12 +1517,12 @@ bool SkillServer::suckScrew(geometry_msgs::PoseStamped screw_head_pose,
   sendFasteningToolCommand(fastening_tool_name, "loosen", false,
                            0.1); // To stop turning the motor after picking
 
-  if (screw_tool_id == "screw_tool_m3")
-    planning_scene_interface_.disallowCollisions(screw_tool_id,
-                                                 "m3_feeder_link");
-  else if (screw_tool_id == "screw_tool_m4")
-    planning_scene_interface_.disallowCollisions(screw_tool_id,
-                                                 "m4_feeder_link");
+  // if (screw_tool_id == "screw_tool_m3")
+  //   planning_scene_interface_.disallowCollisions(screw_tool_id,
+  //                                                "m3_feeder_link");
+  // else if (screw_tool_id == "screw_tool_m4")
+  //   planning_scene_interface_.disallowCollisions(screw_tool_id,
+  //                                                "m4_feeder_link");
   ROS_INFO_STREAM("Moving back up completely.");
   above_screw_head_pose_.pose.position.x -= .05;
   moveToCartPoseLIN(above_screw_head_pose_, robot_name, true, screw_tool_link,

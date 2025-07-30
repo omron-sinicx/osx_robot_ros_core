@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.1.3)
 project(osx_rviz)
 
-## Compile as C++11, supported in ROS Kinetic and newer
-add_compile_options(-std=c++11)
+# Compile as C++17, supported in ROS Noetic and newer
+add_compile_options(-std=c++17)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_AUTOMOC ON)

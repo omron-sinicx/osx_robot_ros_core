@@ -35,12 +35,6 @@
   <run_depend>osx_msgs</run_depend>
   <build_depend>osx_msgs</build_depend>
 
-  <run_depend>osx_assembly_database</run_depend>
-  <build_depend>osx_assembly_database</build_depend>
-
-  <!-- <run_depend>osx_task_planning_msgs</run_depend>
-  <build_depend>osx_task_planning_msgs</build_depend> -->
-
   <run_depend>ur_msgs</run_depend>
   <build_depend>ur_msgs</build_depend>
 
