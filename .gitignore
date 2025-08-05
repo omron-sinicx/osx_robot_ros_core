@@ -1,0 +1,17 @@
+
+# Python auto-generated files.
+*.pyc
+
+# PyCharm
+.idea
+
+# Temporary files
+*.csv#
+*.ods#
+
+# VSCode files
+*.bin
+*.ipch
+
+#Emacs auto-generated files
+*~
