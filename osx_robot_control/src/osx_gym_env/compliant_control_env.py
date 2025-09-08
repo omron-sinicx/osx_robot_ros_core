@@ -234,7 +234,7 @@ class CompliantControlEnv:
         if isinstance(initial_pose, str):
             success = self.osx.active_robots[robot_name].go_to_named_pose(initial_pose)
         else:
-            success = self.osx.active_robots[robot_name].move_joints(joint_pose_goal=initial_pose, speed=0.2)
+            success = self.osx.active_robots[robot_name].set_joint_position_goal(joint_pose_goal=initial_pose, speed=0.2)
         assert success, f"Failed to move to initial configuration for robot '{self.osx.active_robots[robot_name].ns}' : {initial_pose}"
 
     def set_controller_parameters(self, robot_name):
@@ -326,7 +326,7 @@ class CompliantControlEnv:
         """
             Make sure that the absolute error between the current pose of the robot and the target pose
             given by the policy is not huge and won't cause jumps in motion 
-            
+
             returns if the action step is safe to use or not 
         """
         safe = True
@@ -344,7 +344,7 @@ class CompliantControlEnv:
             # error_rotation = np.clip(error_rotation, -self.max_delta_rotation, self.max_delta_rotation)
 
         return safe
-    
+
     def set_compliant_control_action(self, actions, robot_name):
         """
             action_dim: 19
@@ -393,7 +393,7 @@ class CompliantControlEnv:
         else:
             target_position = actions[pos_start_at:pos_start_at+3]
 
-            current_pose = self.active_robots[robot_name].end_effector() # to get the delta 
+            current_pose = self.active_robots[robot_name].end_effector()  # to get the delta
 
             rot_start_at = pos_start_at+3
             if self.orientation_representation == 'axis_angle':
@@ -418,11 +418,10 @@ class CompliantControlEnv:
         if safe_step:
             self.active_robots[robot_name].set_cartesian_target_pose(target_pose)
         else:
-            print("the step is not safe will shutdown") 
+            print("the step is not safe will shutdown")
             self.deactivate_compliance_control()
 
         return safe_step
-
 
     def check_contact_force_limits(self, robot_name):
         """

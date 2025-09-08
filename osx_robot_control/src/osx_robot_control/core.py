@@ -246,7 +246,7 @@ class OSXCore(object):
                     res = self.move_to_sequence_waypoint(robot_name, waypoint_params)
                 elif point[0] == "trajectory":
                     trajectory = point[1]
-                    res = robot.move_lin_trajectory(trajectory)
+                    res = robot.set_linear_eef_trajectory(trajectory)
                 elif point[0] == "joint_trajectory":
                     trajectory = point[1]
                     res = robot.move_joints_trajectory(trajectory)
@@ -394,7 +394,7 @@ class OSXCore(object):
         elif point[0] == "trajectory":
             trajectory = point[1]
             if isinstance(trajectory[0][0], geometry_msgs.msg.PoseStamped):
-                return self.active_robots[robot_name].move_lin_trajectory(trajectory, plan_only=True, initial_joints=initial_joints, end_effector_link=end_effector_link)
+                return self.active_robots[robot_name].set_linear_eef_trajectory(trajectory, plan_only=True, initial_joints=initial_joints, end_effector_link=end_effector_link)
             elif isinstance(trajectory[0][0], dict):
                 joint_list = self.active_robots[trajectory[0][0]["master_name"]].robot_group.get_active_joints() + self.active_robots[trajectory[0][0]["slave_name"]].robot_group.get_active_joints()
                 initial_joints_ = None if not previous_plan else helpers.get_trajectory_joint_goal(previous_plan, joint_list)
@@ -476,10 +476,10 @@ class OSXCore(object):
         retime = params.get("retime", False)
 
         if pose_type == 'joint-space':
-            success = robot.move_joints(pose, speed=speed, acceleration=acceleration, plan_only=plan_only, initial_joints=initial_joints)
+            success = robot.set_joint_position_goal(pose, speed=speed, acceleration=acceleration, plan_only=plan_only, initial_joints=initial_joints)
         elif pose_type == 'joint-space-goal-cartesian-lin-motion':
             p = robot.compute_fk(pose)  # Forward Kinematics
-            success = robot.go_to_pose_goal(p, speed=speed, acceleration=acceleration, plan_only=plan_only, initial_joints=initial_joints, end_effector_link=end_effector_link, move_lin=True)
+            success = robot.set_pose_goal(p, speed=speed, acceleration=acceleration, plan_only=plan_only, initial_joints=initial_joints, end_effector_link=end_effector_link, move_lin=True)
         elif pose_type == 'task-space-in-frame':
             frame_id = params.get("frame_id", "world")
             # Convert orientation to radians!
@@ -491,17 +491,17 @@ class OSXCore(object):
             else:
                 p = conversions.to_pose_stamped(frame_id, np.concatenate([pose[:3], np.deg2rad(pose[3:])]))
                 move_linear = params.get("move_linear", True)
-                success = robot.go_to_pose_goal(p, speed=speed, acceleration=acceleration, move_lin=move_linear, plan_only=plan_only,
-                                                initial_joints=initial_joints, end_effector_link=end_effector_link)
+                success = robot.set_pose_goal(p, speed=speed, acceleration=acceleration, move_lin=move_linear, plan_only=plan_only,
+                                              initial_joints=initial_joints, end_effector_link=end_effector_link)
         elif pose_type == 'relative-tcp':
-            success = robot.move_lin_rel(relative_translation=pose[:3], relative_rotation=np.deg2rad(pose[3:]), speed=speed, acceleration=acceleration,
-                                         relative_to_tcp=True, plan_only=plan_only, initial_joints=initial_joints, end_effector_link=end_effector_link)
+            success = robot.set_relative_motion_goal(relative_translation=pose[:3], relative_rotation=np.deg2rad(pose[3:]), speed=speed, acceleration=acceleration,
+                                                     relative_to_tcp=True, plan_only=plan_only, initial_joints=initial_joints, end_effector_link=end_effector_link)
         elif pose_type == 'relative-world':
-            success = robot.move_lin_rel(relative_translation=pose[:3], relative_rotation=np.deg2rad(pose[3:]), speed=speed,
-                                         acceleration=acceleration, plan_only=plan_only, initial_joints=initial_joints)
+            success = robot.set_relative_motion_goal(relative_translation=pose[:3], relative_rotation=np.deg2rad(pose[3:]), speed=speed,
+                                                     acceleration=acceleration, plan_only=plan_only, initial_joints=initial_joints)
         elif pose_type == 'relative-base':
-            success = robot.move_lin_rel(relative_translation=pose[:3], relative_rotation=np.deg2rad(pose[3:]), speed=speed,
-                                         acceleration=acceleration, relative_to_robot_base=True, plan_only=plan_only, initial_joints=initial_joints)
+            success = robot.set_relative_motion_goal(relative_translation=pose[:3], relative_rotation=np.deg2rad(pose[3:]), speed=speed,
+                                                     acceleration=acceleration, relative_to_robot_base=True, plan_only=plan_only, initial_joints=initial_joints)
         elif pose_type == 'named-pose':
             success = robot.go_to_named_pose(pose, speed=speed, acceleration=acceleration, plan_only=plan_only, initial_joints=initial_joints)
         elif pose_type == 'master-slave':
@@ -526,7 +526,7 @@ class OSXCore(object):
         robot_name = sequence[0]
         robot = self.active_robots[robot_name]
 
-        robot.move_joints(sequence[1])
+        robot.set_joint_position_goal(sequence[1])
         for seq in sequence[2:]:
             success = False
             if isinstance(seq, dict):
@@ -553,7 +553,7 @@ class OSXCore(object):
         slave_initial_joints = initial_joints[6:] if initial_joints is not None else None
         master_initial_joints = initial_joints[:6] if initial_joints is not None else None
 
-        master_plan, _ = self.active_robots[waypoints[0]["master_name"]].move_lin_trajectory(
+        master_plan, _ = self.active_robots[waypoints[0]["master_name"]].set_linear_eef_trajectory(
             master_trajectory, speed=waypoints[0].get("speed", 0.5), plan_only=True, initial_joints=master_initial_joints)
 
         master_slave_plan, planning_time = self.active_robots[robot_name].compute_master_slave_plan(waypoints[0]["master_name"],

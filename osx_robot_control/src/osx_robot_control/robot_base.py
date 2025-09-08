@@ -76,17 +76,18 @@ class RobotBase:
         moveit_fk_srv (rospy.ServiceProxy): Service proxy for forward kinematics
     """
 
-    def __init__(self, group_name: str, tf_listener: tf2_ros.TransformListener):
+    def __init__(self, group_name: str, tf_listener: tf2_ros.TransformListener, ns: str = "", ns_is_group_name: bool = False):
         """
         Initialize the RobotBase class.
 
         Args:
             group_name (str): Name of the MoveIt group to control
             tf_listener (tf2_ros.TransformListener): TF2 transform listener
+            ns (str): Namespace for the robot group
         """
-        self.ns = group_name
         self.robot_group = MoveGroupCommander(group_name)
-        
+        self.ns = group_name if ns_is_group_name else ns
+
         self.listener: tf2_ros.TransformListener = tf_listener
         self.buffer: tf2_ros.Buffer = self.listener.buffer
         self.marker_counter = 0
@@ -452,17 +453,17 @@ class RobotBase:
         self.robot_group.clear_pose_targets()
         return result
 
-    def go_to_pose_goal(self, pose_goal_stamped: geometry_msgs.msg.PoseStamped,
-                        speed: float = 0.25,
-                        acceleration: Optional[float] = None,
-                        end_effector_link: str = "",
-                        move_lin: bool = False,
-                        wait: bool = True,
-                        plan_only: bool = False,
-                        initial_joints: Optional[List[float]] = None,
-                        allow_joint_configuration_flip: bool = False,
-                        move_ptp: bool = False,
-                        retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], bool]:
+    def set_pose_goal(self, pose_goal_stamped: geometry_msgs.msg.PoseStamped,
+                      speed: float = 0.25,
+                      acceleration: Optional[float] = None,
+                      end_effector_link: str = "",
+                      move_lin: bool = False,
+                      wait: bool = True,
+                      plan_only: bool = False,
+                      initial_joints: Optional[List[float]] = None,
+                      allow_joint_configuration_flip: bool = False,
+                      move_ptp: bool = False,
+                      retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], bool]:
         """
         Move robot to a given PoseStamped goal.
 
@@ -496,7 +497,7 @@ class RobotBase:
         group.clear_pose_targets()
 
         if not end_effector_link:
-            end_effector_link = self.ns + "_gripper_tip_link"
+            end_effector_link = self.robot_group.get_end_effector_link()
         group.set_end_effector_link(end_effector_link)
 
         robots_in_simultaneous = rospy.get_param("/osx/simultaneous", False)
@@ -546,15 +547,15 @@ class RobotBase:
 
         return success
 
-    def move_lin_trajectory(self, trajectory: List[Tuple[geometry_msgs.msg.PoseStamped, float, Optional[float]]],
-                            speed: float = 1.0,
-                            acceleration: Optional[float] = None,
-                            end_effector_link: str = "",
-                            plan_only: bool = False,
-                            initial_joints: Optional[List[float]] = None,
-                            allow_joint_configuration_flip: bool = False,
-                            timeout: float = 10,
-                            retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], bool]:
+    def set_linear_eef_trajectory(self, trajectory: List[Tuple[geometry_msgs.msg.PoseStamped, float, Optional[float]]],
+                                  speed: float = 1.0,
+                                  acceleration: Optional[float] = None,
+                                  end_effector_link: str = "",
+                                  plan_only: bool = False,
+                                  initial_joints: Optional[List[float]] = None,
+                                  allow_joint_configuration_flip: bool = False,
+                                  timeout: float = 10,
+                                  retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], bool]:
         """
         Compute and execute a linear trajectory through multiple waypoints using the Pilz Linear planner.
 
@@ -578,7 +579,7 @@ class RobotBase:
         speed_, accel_ = self.set_up_move_group(speed, acceleration, "LINEAR")
 
         if not end_effector_link:
-            end_effector_link = self.ns + "_gripper_tip_link"
+            end_effector_link = self.robot_group.get_end_effector_link()
 
         group = self.robot_group
 
@@ -654,50 +655,19 @@ class RobotBase:
         rospy.logerr("Failed to plan linear trajectory. error code: %s" % response.response.error_code.val)
         return False
 
-    def move_lin(self, pose_goal_stamped: geometry_msgs.msg.PoseStamped,
-                 speed: float = 0.25,
-                 acceleration: Optional[float] = None,
-                 end_effector_link: str = "",
-                 wait: bool = True,
-                 plan_only: bool = False,
-                 initial_joints: Optional[List[float]] = None,
-                 allow_joint_configuration_flip: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], bool]:
-        """
-        Wrapper for go_to_pose_goal with move_lin=True for compatibility with old API.
-
-        This method performs a linear motion to a target pose using the Pilz Linear planner.
-
-        Args:
-            pose_goal_stamped: Target pose to move to
-            speed: Speed scaling factor (0.0 to 1.0)
-            acceleration: Acceleration scaling factor. If None, set to half of speed.
-            end_effector_link: End effector link name. If empty, uses the default end effector link.
-            wait: Whether to wait for the motion to complete
-            plan_only: If True, return only the plan and planning time without executing
-            initial_joints: Initial joint configuration for planning. If None, uses current joint values.
-            allow_joint_configuration_flip: If True, allow joint configuration to flip during motion
-
-        Returns:
-            If plan_only is True, returns a tuple of (plan, planning_time).
-            Otherwise, returns True if the motion was successful, False otherwise.
-        """
-        return self.go_to_pose_goal(pose_goal_stamped, speed, acceleration, end_effector_link, move_lin=True,
-                                    wait=wait, plan_only=plan_only, initial_joints=initial_joints,
-                                    allow_joint_configuration_flip=allow_joint_configuration_flip)
-
-    def move_lin_rel(self, relative_translation: List[float] = [0, 0, 0],
-                     relative_rotation: List[float] = [0, 0, 0],
-                     speed: float = 0.5,
-                     acceleration: Optional[float] = None,
-                     relative_to_robot_base: bool = False,
-                     relative_to_tcp: bool = False,
-                     wait: bool = True,
-                     end_effector_link: str = "",
-                     plan_only: bool = False,
-                     initial_joints: Optional[List[float]] = None,
-                     allow_joint_configuration_flip: bool = False,
-                     pose_only: bool = False,
-                     retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], geometry_msgs.msg.PoseStamped, bool]:
+    def set_relative_motion_goal(self, relative_translation: List[float] = [0, 0, 0],
+                                 relative_rotation: List[float] = [0, 0, 0],
+                                 speed: float = 0.5,
+                                 acceleration: Optional[float] = None,
+                                 relative_to_robot_base: bool = False,
+                                 relative_to_tcp: bool = False,
+                                 wait: bool = True,
+                                 end_effector_link: str = "",
+                                 plan_only: bool = False,
+                                 initial_joints: Optional[List[float]] = None,
+                                 allow_joint_configuration_flip: bool = False,
+                                 pose_only: bool = False,
+                                 retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], geometry_msgs.msg.PoseStamped, bool]:
         """
         Perform a linear motion relative to the current position of the robot.
 
@@ -767,11 +737,11 @@ class RobotBase:
         if pose_only:
             return new_pose
         else:
-            return self.go_to_pose_goal(new_pose, speed=speed, acceleration=acceleration,
-                                        end_effector_link=end_effector_link,  wait=wait,
-                                        move_lin=True, plan_only=plan_only, initial_joints=initial_joints,
-                                        allow_joint_configuration_flip=allow_joint_configuration_flip,
-                                        retime=retime)
+            return self.set_pose_goal(new_pose, speed=speed, acceleration=acceleration,
+                                      end_effector_link=end_effector_link,  wait=wait,
+                                      move_lin=True, plan_only=plan_only, initial_joints=initial_joints,
+                                      allow_joint_configuration_flip=allow_joint_configuration_flip,
+                                      retime=retime)
 
     def go_to_named_pose(self, pose_name: str,
                          speed: float = 0.25,
@@ -824,14 +794,14 @@ class RobotBase:
 
         return success
 
-    def move_joints(self, joint_pose_goal: List[float],
-                    speed: float = 0.6,
-                    acceleration: Optional[float] = None,
-                    wait: bool = True,
-                    plan_only: bool = False,
-                    initial_joints: Optional[List[float]] = None,
-                    move_ptp: bool = False,
-                    retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], bool]:
+    def set_joint_position_goal(self, joint_pose_goal: List[float],
+                                speed: float = 0.6,
+                                acceleration: Optional[float] = None,
+                                wait: bool = True,
+                                plan_only: bool = False,
+                                initial_joints: Optional[List[float]] = None,
+                                move_ptp: bool = False,
+                                retime: bool = False) -> Union[Tuple[moveit_msgs.msg.RobotTrajectory, float], bool]:
         """
         Move the robot to a specific joint configuration.
 
@@ -907,7 +877,7 @@ class RobotBase:
 
         try:
             if not end_effector_link:
-                end_effector_link = self.ns + "_gripper_tip_link"
+                end_effector_link = self.robot_group.get_end_effector_link()
             group.set_end_effector_link(end_effector_link)
         except:
             pass

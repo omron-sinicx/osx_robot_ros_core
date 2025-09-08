@@ -279,9 +279,9 @@ class OSXCommon(OSXCore):
             assert not rospy.is_shutdown()
 
             # Move robot to view position
-            self.active_robots[robot_name].go_to_pose_goal(view_pose,
-                                                           end_effector_link=robot_name + "_outside_camera_color_frame",
-                                                           speed=.5, acceleration=.3, wait=True, move_lin=True)
+            self.active_robots[robot_name].set_pose_goal(view_pose,
+                                                         end_effector_link=robot_name + "_outside_camera_color_frame",
+                                                         speed=.5, acceleration=.3, wait=True, move_lin=True)
             rospy.sleep(0.5)  # wait for robot to stop moving for cleaner vision
 
             # Try detection multiple times
@@ -689,7 +689,7 @@ class OSXCommon(OSXCore):
 
             rospy.logdebug(f"Going to height {retreat_pose.pose.position.z}")
 
-            if not robot.go_to_pose_goal(retreat_pose, speed=speed_slow, acceleration=acc_slow, move_lin=True):
+            if not robot.set_pose_goal(retreat_pose, speed=speed_slow, acceleration=acc_slow, move_lin=True):
                 rospy.logerr("Fail to go to lift_up_pose. Opening.")
                 robot.gripper.open(grasp_width)
                 if allow_collision_with_tray:
