@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(osx_ur5e)
+project(osx_moveit_ur5e)
 
 find_package(catkin REQUIRED)
 

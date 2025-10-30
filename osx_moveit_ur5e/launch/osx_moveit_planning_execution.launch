@@ -1,18 +1,18 @@
 <launch>
   <arg name="sim" default="false" />
   <arg name="debug" default="false" />
-  <arg name="config" default="$(find osx_ur5e)/launch/moveit.rviz" />
+  <arg name="config" default="$(find osx_moveit_ur5e)/launch/moveit.rviz" />
 
   <!-- Remap follow_joint_trajectory -->
   <remap if="$(arg sim)" from="/scaled_pos_joint_traj_controller/follow_joint_trajectory" to="/eff_joint_traj_controller/follow_joint_trajectory"/>
 
   <!-- Launch moveit -->
-  <include file="$(find osx_ur5e)/launch/move_group.launch">
+  <include file="$(find osx_moveit_ur5e)/launch/move_group.launch">
     <arg name="debug" default="$(arg debug)" />
   </include>
 
   <!-- Launch moveit with rviz -->
-  <include file="$(find osx_ur5e)/launch/moveit_rviz.launch">
+  <include file="$(find osx_moveit_ur5e)/launch/moveit_rviz.launch">
     <arg name="debug" value="$(arg debug)" />
     <arg name="config" value="$(arg config)" />
   </include>
