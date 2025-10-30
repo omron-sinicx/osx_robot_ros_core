@@ -1,0 +1,11 @@
+moveit_setup_assistant_config:
+  URDF:
+    package: ur_description
+    relative_path: urdf/ur5e.xacro
+    xacro_args: ""
+  SRDF:
+    relative_path: config/ur5e.srdf
+  CONFIG:
+    author_name: Cristian Beltran
+    author_email: cristianbehe@gmail.com
+    generated_timestamp: 1757315324

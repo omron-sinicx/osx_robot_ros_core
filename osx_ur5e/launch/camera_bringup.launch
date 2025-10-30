@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<launch>
+
+  <arg name="camera_name"	value="a_bot_inside_camera"/>
+  
+  <arg name="camera_serial_no"	value="230422273103"/>
+  <arg name="camera_fps"	default="30"/>
+  <arg name="depth_fps"	  default="$(arg camera_fps)"/>
+  <arg name="camera_width"	default="1280"/>
+  <arg name="camera_height"	default="720"/>
+  <arg name="initial_reset"	default="false"/>
+  <arg name="enable_depth"	default="true"/>
+ 
+ 
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+    <arg name="camera"		    value="$(arg camera_name)"/>
+    <arg name="serial_no"           value="$(arg camera_serial_no)"/>
+    <arg name="tf_prefix"	    value="calibrated_$(arg camera_name)"/>
+    <arg name="enable_pointcloud"   value="false"/>
+    <arg name="align_depth"         value="$(arg enable_depth)"/>
+    <arg name="fisheye_fps"         value="$(arg camera_fps)"/>
+    <arg name="depth_width"         value="$(arg camera_width)"/>
+    <arg name="depth_height"        value="$(arg camera_height)"/>
+    <arg name="depth_fps"           value="$(arg depth_fps)"/>
+    <arg name="color_fps"           value="$(arg camera_fps)"/>
+    <arg name="color_width"         value="$(arg camera_width)"/>
+    <arg name="color_height"        value="$(arg camera_height)"/>
+    <arg name="enable_infra1"       value="false"/>
+    <arg name="enable_infra2"       value="false"/>
+    <arg name="initial_reset"       value="$(arg initial_reset)"/>
+    <arg name="enable_depth"       value="$(arg enable_depth)"/>
+  </include>
+<!-- 
+  <include file="$(find osx_scene_description)/launch/publish_camera_calibration.launch">
+    <arg name="camera_name"	value="$(arg camera_name)"/>
+  </include>
+
+  <node name="dummy_calibrated_$(arg camera_name)" pkg="tf" type="static_transform_publisher"
+        args="0 0 0 0 0 0 world calibrated_$(arg camera_name)_link 10"/> -->
+
+</launch>

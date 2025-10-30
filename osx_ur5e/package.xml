@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>osx_ur5e</name>
+  <version>0.0.0</version>
+  <description>The osx_ur5e package has the configuration to connect to a single real robot</description>
+
+  <maintainer email="cristianbehe@gmail.com">Cristian Beltran</maintainer>
+
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>rospy</build_depend>
+
+  <build_export_depend>rospy</build_export_depend>
+
+  <exec_depend>rospy</exec_depend>
+
+</package>
