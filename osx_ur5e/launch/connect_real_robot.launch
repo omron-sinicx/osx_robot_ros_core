@@ -4,7 +4,7 @@
   <param name="use_real_robot" type="bool" value="true" />
   
   <!-- Robot parameters that are separate for a_bot and b_bot -->
-  <arg name="robot_ip" default="192.168.1.90"/>
+  <arg name="robot_ip" default="192.168.2.42"/>
   
   <arg name="reverse_port" default="50001" />
   <arg name="script_sender_port" default="50002" />
