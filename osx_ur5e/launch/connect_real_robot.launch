@@ -37,7 +37,6 @@
   <!-- Remap force-torque sensor topic for cartesian_compliance_controller -->
   <remap from="cartesian_compliance_controller/ft_sensor_wrench" to="/wrench"/>
 
-  <!-- node name="ft_filter" pkg="ur_control" type="ft_filter.py" args="-z -t wrench" output="screen" / -->
   <node name="ft_filter" pkg="ur_control" type="ft_filter.py" args="-t wrench" output="screen" />
 
   <!-- GDB functionality -->
