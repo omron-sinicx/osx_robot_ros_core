@@ -4,7 +4,7 @@
   <param name="use_real_robot" type="bool" value="true" />
   
   <!-- Robot parameters that are separate for a_bot and b_bot -->
-  <arg name="robot_ip" default="192.168.0.20"/>
+  <arg name="robot_ip" default="10.0.2.15"/>
   
   <arg name="reverse_port" default="50001" />
   <arg name="script_sender_port" default="50002" />
@@ -46,12 +46,12 @@
 
   <!-- ======================================================= -->
 
-  <include file="$(find robotiq_control)/launch/urcap_cmodel_action_controller.launch">
+  <!-- <include file="$(find robotiq_control)/launch/urcap_cmodel_action_controller.launch">
     <arg name="namespace" value="/" />
     <arg name="gripper_prefix" value="" />
     <arg name="address" value="$(arg robot_ip)" />
     <arg name="config" value="cmodel_action_controller_85" />
-  </include>
+  </include> -->
 
   <!-- robot model -->
   <include file="$(arg robot_description_file)">
