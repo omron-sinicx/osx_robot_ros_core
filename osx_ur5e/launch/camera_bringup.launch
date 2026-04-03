@@ -3,7 +3,7 @@
 
   <arg name="camera_name"	value="a_bot_inside_camera"/>
   
-  <arg name="camera_serial_no"	value="230422273103"/>
+  <arg name="camera_serial_no"	value="242322075793"/>
   <arg name="camera_fps"	default="30"/>
   <arg name="depth_fps"	  default="$(arg camera_fps)"/>
   <arg name="camera_width"	default="1280"/>

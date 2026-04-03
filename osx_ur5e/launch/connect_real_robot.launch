@@ -1,11 +1,11 @@
 <?xml version="1.0"?>
 <launch>
-  
+
   <param name="use_real_robot" type="bool" value="true" />
-  
+
   <!-- Robot parameters that are separate for a_bot and b_bot -->
-  <arg name="robot_ip" default="10.0.2.15"/>
-  
+  <arg name="robot_ip" default="10.0.2.3"/>
+
   <arg name="reverse_port" default="50001" />
   <arg name="script_sender_port" default="50002" />
   <arg name="trajectory_port" default="50003" doc="The driver will offer an interface to receive complete trajectories on this port. To use this, make sure a pass_through_controller is running. See the controller documentation for details."/>
@@ -15,8 +15,8 @@
   <arg name="tool_device_name" default="/tmp/ttyUR"/>
   <arg name="tool_tcp_port" default="54322"/>
   <!-- c_bot -->
-  <arg name="kinematics_config" default="$(find osx_ur5e)/config/ur5e_calibration.yaml"/> 
-  
+  <arg name="kinematics_config" default="$(find osx_ur5e)/config/ur5e_calibration.yaml"/>
+
   <!-- Parameters that are shared between a_bot and b_bot -->
   <arg name="tf_prefix" default="" doc="tf_prefix used for the robot."/>
   <arg name="headless_mode" default="false" doc="Automatically send URScript to robot to execute. On e-Series this does require the robot to be in 'remote-control' mode. With this, the URCap is not needed on the robot."/>
@@ -33,16 +33,16 @@
   <arg name="robot_receive_timeout" default="0.1" doc="Timeout for the robot to respond to a command. This is used to prevent the robot from hanging if it does not respond to a command."/>
 
   <arg name="limited" default="false" doc="Use the description in limited mode (Every axis rotates from -PI to PI)"/>
-  
+
   <!-- Remap force-torque sensor topic for cartesian_compliance_controller -->
   <remap from="cartesian_compliance_controller/ft_sensor_wrench" to="/wrench"/>
-  
+
   <node name="ft_filter" pkg="ur_control" type="ft_filter.py" args="-z -t wrench" output="screen" />
 
   <!-- GDB functionality -->
   <arg name="debug" default="false" doc="If set to true, will start the driver inside gdb" />
   <arg unless="$(arg debug)" name="launch_prefix" value="" />
-  <arg     if="$(arg debug)" name="launch_prefix" value="gdb --ex run --args" />
+  <arg if="$(arg debug)" name="launch_prefix" value="gdb --ex run --args" />
 
   <!-- ======================================================= -->
 
@@ -88,6 +88,6 @@
     <arg name="tool_tcp_port" value="$(arg tool_tcp_port)"/>
     <arg name="robot_receive_timeout" value="$(arg robot_receive_timeout)" />
   </include>
-  
+
 
 </launch>
