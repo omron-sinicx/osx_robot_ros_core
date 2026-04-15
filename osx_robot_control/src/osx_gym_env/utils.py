@@ -8,7 +8,7 @@ from ur_control import transformations
 
 
 class ImageRecorder:
-    def __init__(self, init_node=True, is_debug=False, camera_names=[], use_torch=False, data_type='uint8'):
+    def __init__(self, init_node=True, is_debug=False, camera_names=[], use_torch=False, data_type='float32'):
         from collections import deque
         import rospy
         from cv_bridge import CvBridge
@@ -46,8 +46,8 @@ class ImageRecorder:
                 image_dict[cam_name] = None
             else:
                 image = getattr(self, f'{cam_name}_image')
-                if self.data_type == 'uint8':
-                    image = (image * 255.0).astype(np.uint8)
+                if self.data_type == 'float32':
+                    image = (image/255.0).astype(np.float32)
                 image_dict[cam_name] = image
         return image_dict
 

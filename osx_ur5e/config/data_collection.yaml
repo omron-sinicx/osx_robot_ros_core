@@ -2,8 +2,8 @@
 dataset:
   repo_id: test_dataset
   task: "Pick and place the object"
-  root: /root/osx-ur/dependencies/comet/comet/data # null = lerobot default (~/.cache/huggingface/lerobot)
-  fps: 20
+  root: /root/osx-ur/dependencies/comet/data # null = lerobot default (~/.cache/huggingface/lerobot)
+  fps: 50
   num_episodes: 50
   episode_time_s: 60.0
   reset_time_s: 10.0
@@ -52,7 +52,7 @@ image_writer:
 # ================== Controller Configuration ==================
 controller:
   mode: "spring-mass-damper" # "parallel"
-  p_gains: [0.035, 0.035, 0.035, 0.5, 0.5, 0.5]
+  p_gains: [0.035, 0.035, 0.035, 0.1, 0.1, 0.1]
   d_gains: [0, 0, 0, 0, 0, 0]
   selection_matrix: [1, 1, 1, 1, 1, 1]
   error_scale: 0.8

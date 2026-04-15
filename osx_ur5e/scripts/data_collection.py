@@ -13,14 +13,10 @@ Controls during recording:
 """
 
 import argparse
-import atexit
 import logging
 import math
-import os
 import shutil
 import sys
-import termios
-import threading
 import time
 from pathlib import Path
 
@@ -39,6 +35,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from pynput import keyboard as kb
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from osx_gello.gello import Gello
 from osx_gym_env.utils import ImageRecorder
@@ -134,71 +131,31 @@ def build_features(cfg: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def start_keyboard_listener(events):
-    """Daemon thread reading single key presses without requiring Enter.
+    """Start a pynput keyboard listener for episode control.
 
     Keys:
-        Enter  - end current episode early (save it)
-        r      - discard episode and re-record
-        q      - stop all recording
+        Enter / Space  - end current episode early (save it)
+        r              - discard episode and re-record
+        q              - stop all recording
     """
 
-    # Shared state so the atexit handler can restore the terminal even if
-    # the daemon thread was killed before its own finally block ran.
-    _term_state: dict = {}
-
-    def _restore_terminal():
-        if "fd" not in _term_state:
-            return
+    def on_press(key):
         try:
-            termios.tcsetattr(_term_state["fd"], termios.TCSADRAIN, _term_state["settings"])
-            _term_state["tty_file"].close()
-        except Exception:
-            pass
-        _term_state.clear()
+            ch = key.char.lower()
+            if ch == "q":
+                events["stop"] = True
+                events["exit_early"] = True
+            elif ch == "r":
+                events["rerecord"] = True
+                events["exit_early"] = True
+        except AttributeError:
+            # Special key (Enter, Space, etc.)
+            if key in (kb.Key.enter, kb.Key.space):
+                events["exit_early"] = True
 
-    atexit.register(_restore_terminal)
-
-    def _listen():
-        # Open /dev/tty directly so we always get the controlling terminal,
-        # even when stdin is a pipe (e.g. launched via rosrun).
-        try:
-            tty_file = open("/dev/tty", "rb", buffering=0)
-        except OSError as e:
-            log.warning("Keyboard listener disabled (no controlling terminal): %s", e)
-            return
-
-        fd = tty_file.fileno()
-        old_settings = termios.tcgetattr(fd)
-        _term_state["fd"] = fd
-        _term_state["settings"] = old_settings
-        _term_state["tty_file"] = tty_file
-
-        try:
-            # cbreak mode: disable line-buffering and echo, keep output processing (OPOST)
-            # (tty.cbreak was removed in Python 3.12, so we set it manually)
-            mode = termios.tcgetattr(fd)
-            mode[3] &= ~(termios.ICANON | termios.ECHO)  # c_lflag
-            mode[6][termios.VMIN] = 1
-            mode[6][termios.VTIME] = 0
-            termios.tcsetattr(fd, termios.TCSAFLUSH, mode)
-            while not events["stop"]:
-                ch = os.read(fd, 1).decode("utf-8", errors="ignore").lower()
-                if ch == "q":
-                    events["stop"] = True
-                    events["exit_early"] = True
-                elif ch == "r":
-                    events["rerecord"] = True
-                    events["exit_early"] = True
-                elif ch in ("\r", "\n", " "):
-                    events["exit_early"] = True
-        except Exception as e:
-            log.error("Keyboard listener error: %s", e)
-        finally:
-            _restore_terminal()
-
-    t = threading.Thread(target=_listen, daemon=True)
-    t.start()
-    return t
+    listener = kb.Listener(on_press=on_press)
+    listener.start()
+    return listener
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +176,7 @@ def get_observations(arm: CompliantController, image_recorder: ImageRecorder):
         "observation.ft":                      arm.get_wrench(),
     }
     if image_recorder is not None:
-        obs.update(image_recorder.get_images())
+        obs.update({f"observation.images.{k}": v for k, v in image_recorder.get_images().items()})
     return obs
 
 
