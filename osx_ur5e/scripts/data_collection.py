@@ -15,8 +15,10 @@ Controls during recording:
 import argparse
 import logging
 import math
+import os
 import shutil
 import sys
+import termios
 import threading
 import time
 from pathlib import Path
@@ -24,6 +26,18 @@ from pathlib import Path
 import numpy as np
 import yaml
 import rospy
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from osx_gello.gello import Gello
 from osx_gym_env.utils import ImageRecorder
@@ -33,7 +47,7 @@ from ur_control.fzi_cartesian_compliance_controller import CompliantController
 OBS_STR = "observation"
 ACTION = "action"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+console = Console()
 log = logging.getLogger(__name__)
 
 
@@ -119,22 +133,48 @@ def build_features(cfg: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def start_keyboard_listener(events):
-    """Daemon thread reading stdin to set episode control flags."""
+    """Daemon thread reading single key presses without requiring Enter.
+
+    Keys:
+        Enter  - end current episode early (save it)
+        r      - discard episode and re-record
+        q      - stop all recording
+    """
 
     def _listen():
-        while not events["stop"]:
-            try:
-                line = sys.stdin.readline().strip().lower()
-            except EOFError:
-                break
-            if line == "q":
-                events["stop"] = True
-                events["exit_early"] = True
-            elif line == "r":
-                events["rerecord"] = True
-                events["exit_early"] = True
-            else:
-                events["exit_early"] = True
+        # Open /dev/tty directly so we always get the controlling terminal,
+        # even when stdin is a pipe (e.g. launched via rosrun).
+        try:
+            tty_file = open("/dev/tty", "rb", buffering=0)
+        except OSError as e:
+            log.warning("Keyboard listener disabled (no controlling terminal): %s", e)
+            return
+
+        fd = tty_file.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            # cbreak mode: disable line-buffering and echo, keep output processing (OPOST)
+            # (tty.cbreak was removed in Python 3.12, so we set it manually)
+            mode = termios.tcgetattr(fd)
+            mode[3] &= ~(termios.ICANON | termios.ECHO)  # c_lflag
+            mode[6][termios.VMIN] = 1
+            mode[6][termios.VTIME] = 0
+            termios.tcsetattr(fd, termios.TCSAFLUSH, mode)
+            while not events["stop"]:
+                ch = os.read(fd, 1).decode("utf-8", errors="ignore").lower()
+                if ch == "q":
+                    events["stop"] = True
+                    events["exit_early"] = True
+                elif ch == "r":
+                    events["rerecord"] = True
+                    events["exit_early"] = True
+                elif ch in ("\r", "\n", " "):
+                    events["exit_early"] = True
+        except Exception as e:
+            log.error("Keyboard listener error: %s", e)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            tty_file.close()
 
     t = threading.Thread(target=_listen, daemon=True)
     t.start()
@@ -145,16 +185,20 @@ def start_keyboard_listener(events):
 # Robot I/O
 # ---------------------------------------------------------------------------
 
-def get_observations(arm, image_recorder):
+def get_observations(arm: CompliantController, image_recorder: ImageRecorder):
     eef = arm.end_effector()
+    eef_velocity = arm.end_effector_velocity()
     obs = {
-        "observation.eef_position":           eef[:3],
-        "observation.eef_rotation_ortho6":    transformations.ortho6_from_quaternion(eef[3:]),
-        "observation.eef_rotation_axis_angle": transformations.axis_angle_from_quaternion(eef[3:]),
-        "observation.eef_wrench":             arm.get_wrench(),
+        "observation.qpos":                    arm.joint_angles(),
+        "observation.qvel":                    arm.joint_velocities(),
+        "observation.eef.position":            eef[:3],
+        "observation.eef.linear_velocity":     eef_velocity[:3],
+        "observation.eef.angular_velocity":    eef_velocity[3:],
+        "observation.eef.rotation_ortho6":     transformations.ortho6_from_quaternion(eef[3:]),
+        "observation.eef.rotation_axis_angle": transformations.axis_angle_from_quaternion(eef[3:]),
+        "observation.ft":                      arm.get_wrench(),
     }
     if image_recorder is not None:
-        print("Getting images")
         obs.update(image_recorder.get_images())
     return obs
 
@@ -163,14 +207,16 @@ def set_action(arm: CompliantController, gello: Gello):
     gello_joints = gello.joint_angles()
     current_pose = arm.end_effector()
     target_pose = arm.end_effector(joint_angles=gello_joints)
+    stiffness_diag = arm.current_stiffness
 
     arm.set_cartesian_target_pose(pose=target_pose)
 
     return {
-        "action.joint_angles":        gello_joints,
+        "action.joint":               gello_joints,
         "action.position":            target_pose[:3],
         "action.rotation_ortho6":     transformations.ortho6_from_quaternion(target_pose[3:]),
         "action.rotation_axis_angle": transformations.axis_angle_from_quaternion(target_pose[3:]),
+        "action.stiffness_diag":      stiffness_diag,
         "action.delta_position":      target_pose[:3] - current_pose[:3],
         "action.delta_rotation":      transformations.quaternions_orientation_error(target_pose[3:], current_pose[3:]),
     }
@@ -182,30 +228,51 @@ def set_action(arm: CompliantController, gello: Gello):
 
 def record_episode(arm: CompliantController, gello: Gello, image_recorder: ImageRecorder, dataset: LeRobotDataset, fps: int, episode_time_s: float, task: str, events: dict):
     dt = 1.0 / fps
-    start_t = time.perf_counter()
+    total_steps = math.ceil(episode_time_s * fps)
     arm.activate_cartesian_controller()
 
-    while time.perf_counter() - start_t < episode_time_s and not rospy.is_shutdown():
-        if events["exit_early"]:
-            events["exit_early"] = False
-            break
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]Episode[/bold cyan]"),
+        BarColumn(bar_width=40),
+        MofNCompleteColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TextColumn("/"),
+        TimeRemainingColumn(),
+        TextColumn("[dim]fps:{task.fields[hz]:.0f}[/dim]"),
+        console=console,
+        refresh_per_second=10,
+    )
 
-        loop_start = time.perf_counter()
+    with progress:
+        task_id = progress.add_task("record", total=total_steps, hz=fps)
+        start_t = time.perf_counter()
 
-        all_values = {}
-        all_values.update(get_observations(arm, image_recorder))
-        all_values.update(set_action(arm, gello))
+        while time.perf_counter() - start_t < episode_time_s and not rospy.is_shutdown():
+            if events["exit_early"] or events["stop"]:
+                events["exit_early"] = False
+                break
 
-        all_values = {k: v.astype(np.float32) for k, v in all_values.items()}
+            loop_start = time.perf_counter()
 
-        dataset.add_frame({**all_values, "task": task})
+            all_values = {}
+            all_values.update(get_observations(arm, image_recorder))
+            all_values.update(set_action(arm, gello))
 
-        elapsed = time.perf_counter() - loop_start
-        sleep_time = dt - elapsed
-        if sleep_time < 0:
-            log.warning("Loop running slow: %.1f Hz (target %d Hz)", 1.0 / elapsed, fps)
-        else:
-            rospy.sleep(sleep_time)
+            all_values = {k: v.astype(np.float32) for k, v in all_values.items()}
+
+            dataset.add_frame({**all_values, "task": task})
+
+            elapsed = time.perf_counter() - loop_start
+            sleep_time = dt - elapsed
+            if sleep_time < 0:
+                log.warning("Loop running slow: %.1f Hz (target %d Hz)", 1.0 / elapsed, fps)
+            else:
+                rospy.sleep(sleep_time)
+
+            actual_hz = 1.0 / max(time.perf_counter() - loop_start, 1e-6)
+            progress.update(task_id, advance=1, hz=actual_hz)
 
     arm.activate_joint_trajectory_controller()
 
@@ -238,6 +305,12 @@ def main():
 
     rospy.init_node("data_collection")
 
+    # rospy.init_node() rewires the root logger; set up Rich on our logger explicitly after it.
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    if not any(isinstance(h, RichHandler) for h in log.handlers):
+        log.addHandler(RichHandler(console=console, show_time=True, show_path=False, markup=True))
+
     log.info("Initializing hardware...")
     gello = Gello()
     arm = CompliantController(gripper_type=None)
@@ -246,6 +319,8 @@ def main():
     arm.set_position_control_mode(enable=True)
     arm.update_selection_matrix(cfg["controller"]["selection_matrix"])
     arm.set_solver_parameters(error_scale=cfg["controller"]["error_scale"], iterations=cfg["controller"]["iterations"], publish_state_feedback=True)
+    arm.update_stiffness(cfg["controller"]["stiffness"] * np.ones(6))
+    arm.current_stiffness = np.array(cfg["controller"]["stiffness"] * np.ones(6))
     arm.auto_switch_controllers = False
     arm.async_mode = True
     arm.zero_ft_sensor()
@@ -301,10 +376,16 @@ def main():
                 ds_cfg["fps"], ds_cfg["episode_time_s"], ds_cfg["task"], events,
             )
 
+            if events["stop"]:  # Don't save episode if stopping recording
+                log.info("Stopping recording...")
+                dataset.clear_episode_buffer()
+                break
+
             if events["rerecord"]:
                 log.info("Discarding episode, re-recording...")
                 events["rerecord"] = False
                 dataset.clear_episode_buffer()
+                wait_for_reset(ds_cfg["reset_time_s"], events)
                 continue
 
             dataset.save_episode()

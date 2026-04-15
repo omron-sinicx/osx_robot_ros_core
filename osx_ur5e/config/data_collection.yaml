@@ -24,17 +24,22 @@ dataset:
 # key: feature name used in the dataset
 # value: list of ints representing the shape
 states:
-  observation.eef_position: [3]
-  observation.eef_rotation_ortho6: [6]
-  observation.eef_rotation_axis_angle: [3]
-  observation.eef_wrench: [6]
+  observation.qpos: [6]
+  observation.qvel: [6]
+  observation.eef.position: [3]
+  observation.eef.linear_velocity: [3]
+  observation.eef.angular_velocity: [3]
+  observation.eef.rotation_ortho6: [6]
+  observation.eef.rotation_axis_angle: [3]
+  observation.ft: [6]
 
 # ================== Action features ==================
 actions:
-  action.joint_angles: [6]
+  action.joint: [6]
   action.position: [3]
   action.rotation_ortho6: [6]
   action.rotation_axis_angle: [3]
+  action.stiffness_diag: [6]
   action.delta_position: [3]
   action.delta_rotation: [3]
 
@@ -52,6 +57,7 @@ controller:
   selection_matrix: [1, 1, 1, 1, 1, 1]
   error_scale: 0.8
   iterations: 1.0
+  stiffness: 1000
   stiffness_limits:
     translation: [50, 1500]
     rotation: [10, 1000]
