@@ -13,6 +13,7 @@ Controls during recording:
 """
 
 import argparse
+import atexit
 import logging
 import math
 import os
@@ -141,6 +142,22 @@ def start_keyboard_listener(events):
         q      - stop all recording
     """
 
+    # Shared state so the atexit handler can restore the terminal even if
+    # the daemon thread was killed before its own finally block ran.
+    _term_state: dict = {}
+
+    def _restore_terminal():
+        if "fd" not in _term_state:
+            return
+        try:
+            termios.tcsetattr(_term_state["fd"], termios.TCSADRAIN, _term_state["settings"])
+            _term_state["tty_file"].close()
+        except Exception:
+            pass
+        _term_state.clear()
+
+    atexit.register(_restore_terminal)
+
     def _listen():
         # Open /dev/tty directly so we always get the controlling terminal,
         # even when stdin is a pipe (e.g. launched via rosrun).
@@ -152,6 +169,10 @@ def start_keyboard_listener(events):
 
         fd = tty_file.fileno()
         old_settings = termios.tcgetattr(fd)
+        _term_state["fd"] = fd
+        _term_state["settings"] = old_settings
+        _term_state["tty_file"] = tty_file
+
         try:
             # cbreak mode: disable line-buffering and echo, keep output processing (OPOST)
             # (tty.cbreak was removed in Python 3.12, so we set it manually)
@@ -173,8 +194,7 @@ def start_keyboard_listener(events):
         except Exception as e:
             log.error("Keyboard listener error: %s", e)
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            tty_file.close()
+            _restore_terminal()
 
     t = threading.Thread(target=_listen, daemon=True)
     t.start()

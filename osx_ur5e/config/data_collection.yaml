@@ -10,15 +10,15 @@ dataset:
   robot_type: ur5e
 
 # ================== Camera Configuration ==================
-# cameras:
-#   front_camera:
-#     height: 480
-#     width: 640
-#     channels: 3
-#   wrist_camera:
-#     height: 480
-#     width: 640
-#     channels: 3
+cameras:
+  front_camera:
+    height: 480
+    width: 640
+    channels: 3
+  wrist_camera:
+    height: 480
+    width: 640
+    channels: 3
 
 # ================== Observation (state) features ==================
 # key: feature name used in the dataset

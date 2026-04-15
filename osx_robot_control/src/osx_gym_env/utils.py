@@ -8,7 +8,7 @@ from ur_control import transformations
 
 
 class ImageRecorder:
-    def __init__(self, init_node=True, is_debug=False, camera_names=[], use_torch=False):
+    def __init__(self, init_node=True, is_debug=False, camera_names=[], use_torch=False, data_type='uint8'):
         from collections import deque
         import rospy
         from cv_bridge import CvBridge
@@ -16,6 +16,7 @@ class ImageRecorder:
         self.is_debug = is_debug
         self.bridge = CvBridge()
         self.camera_names = camera_names
+        self.data_type = data_type
         if init_node:
             rospy.init_node('image_recorder', anonymous=True)
         for cam_name in self.camera_names:
@@ -44,7 +45,10 @@ class ImageRecorder:
                 rospy.logerr_throttle(1, "Image is too old! ignoring")
                 image_dict[cam_name] = None
             else:
-                image_dict[cam_name] = getattr(self, f'{cam_name}_image')
+                image = getattr(self, f'{cam_name}_image')
+                if self.data_type == 'uint8':
+                    image = (image * 255.0).astype(np.uint8)
+                image_dict[cam_name] = image
         return image_dict
 
     def print_diagnostics(self):
