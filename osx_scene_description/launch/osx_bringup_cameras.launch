@@ -8,13 +8,13 @@
   <!-- WORKAROUND: Keep this block synced between the osx_bringup_camX/cameras files! -->
   <!-- Synced block start -->
   <!-- Camera parameters -->
-  <arg name="camera0_name"	value="a_bot_inside_camera"/>
-  <arg name="camera1_name"	value="a_bot_outside_camera"/>
+  <arg name="camera0_name"	value="d435i"/>
+  <arg name="camera1_name"	value="d435"/>
   <arg name="camera2_name"	value="b_bot_inside_camera"/>
   <arg name="camera3_name"	value="b_bot_outside_camera"/>
   <arg name="camera5_name"	value="extra_camera"/>
-  <arg name="camera0_serial_no"	value="040322071714"/>
-  <arg name="camera1_serial_no"	value="819612071438"/>
+  <arg name="camera0_serial_no"	value="943222072344"/>
+  <arg name="camera1_serial_no"	value="143322073893"/>
   <arg name="camera2_serial_no" value="143322073059"/>
   <arg name="camera3_serial_no" value="143322073893"/>
   <!-- <arg name="camera5_serial_no" value="819612071438"/> -->
@@ -33,8 +33,8 @@
   </include> -->
 
   <include file="$(find osx_scene_description)/launch/osx_bringup_single_camera.launch">
-    <arg name="camera_name" value="$(arg camera3_name)" />
-    <arg name="camera_serial_no" value="$(arg camera3_serial_no)" />
+    <arg name="camera_name" value="$(arg camera0_name)" />
+    <arg name="camera_serial_no" value="$(arg camera0_serial_no)" />
     <arg name="camera_fps" value="$(arg camera_fps)" />
     <arg name="camera_width" value="$(arg camera_width)" />
     <arg name="camera_height" value="$(arg camera_height)" />
@@ -42,6 +42,7 @@
     <arg name="calibration_mode" value="$(arg calibration_mode)" />
   </include>
   
+  <!-- Delay 2nd camera launch to avoid USB bandwidth contention -->
   <include file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
     <arg name="time" value="5" />
     <arg name="pkg" value="osx_scene_description" />
