@@ -8,6 +8,7 @@
        This is a known bug as of July 2018. -->
 
   <param name="use_gazebo_sim" type="bool" value="true" />
+  <param name="use_real_robot" type="bool" value="false" />
 
   <env name="GAZEBO_MODEL_PATH"
        value="$(find osx_scene_description):$(find osx_gazebo)/models:$(optenv GAZEBO_MODEL_PATH)" />

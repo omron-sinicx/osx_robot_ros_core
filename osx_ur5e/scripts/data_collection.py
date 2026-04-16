@@ -180,22 +180,35 @@ def get_observations(arm: CompliantController, image_recorder: ImageRecorder):
     return obs
 
 
-def set_action(arm: CompliantController, gello: Gello):
+def set_action(arm: CompliantController, gello: Gello, safety_configs: dict):
     gello_joints = gello.joint_angles()
     current_pose = arm.end_effector()
     target_pose = arm.end_effector(joint_angles=gello_joints)
     stiffness_diag = arm.current_stiffness
+    delta_translation = target_pose[:3] - current_pose[:3]
+    delta_rotation = transformations.quaternions_orientation_error(target_pose[3:], current_pose[3:])
 
-    arm.set_cartesian_target_pose(pose=target_pose)
+    max_delta_rotation = np.deg2rad(safety_configs["max_delta_rotation"])
+    clipped_delta_translation = np.clip(delta_translation, -safety_configs["max_delta_translation"], safety_configs["max_delta_translation"])
+    clipped_delta_orientation = np.clip(delta_rotation, -max_delta_rotation, max_delta_rotation)
+
+    next_position = current_pose[:3] + clipped_delta_translation
+    next_position[0] = np.clip(next_position[0], safety_configs["workspace_range"]["x"][0], safety_configs["workspace_range"]["x"][1])
+    next_position[1] = np.clip(next_position[1], safety_configs["workspace_range"]["y"][0], safety_configs["workspace_range"]["y"][1])
+    next_position[2] = np.clip(next_position[2], safety_configs["workspace_range"]["z"][0], safety_configs["workspace_range"]["z"][1])
+    next_orientation = transformations.rotate_quaternion_by_rpy(*clipped_delta_orientation, current_pose[3:])
+    next_target = np.concatenate([next_position, next_orientation])
+
+    arm.set_cartesian_target_pose(pose=next_target)
 
     return {
         "action.joint":               gello_joints,
-        "action.position":            target_pose[:3],
-        "action.rotation_ortho6":     transformations.ortho6_from_quaternion(target_pose[3:]),
-        "action.rotation_axis_angle": transformations.axis_angle_from_quaternion(target_pose[3:]),
+        "action.position":            next_position,
+        "action.rotation_ortho6":     transformations.ortho6_from_quaternion(next_orientation),
+        "action.rotation_axis_angle": transformations.axis_angle_from_quaternion(next_orientation),
         "action.stiffness_diag":      stiffness_diag,
-        "action.delta_position":      target_pose[:3] - current_pose[:3],
-        "action.delta_rotation":      transformations.quaternions_orientation_error(target_pose[3:], current_pose[3:]),
+        "action.delta_position":      clipped_delta_translation,
+        "action.delta_rotation":      clipped_delta_orientation,
     }
 
 
@@ -203,7 +216,7 @@ def set_action(arm: CompliantController, gello: Gello):
 # Record loop
 # ---------------------------------------------------------------------------
 
-def record_episode(arm: CompliantController, gello: Gello, image_recorder: ImageRecorder, dataset: LeRobotDataset, fps: int, episode_time_s: float, task: str, events: dict):
+def record_episode(arm: CompliantController, gello: Gello, image_recorder: ImageRecorder, dataset: LeRobotDataset, fps: int, episode_time_s: float, task: str, events: dict, safety_configs: dict):
     dt = 1.0 / fps
     total_steps = math.ceil(episode_time_s * fps)
     arm.activate_cartesian_controller()
@@ -231,11 +244,19 @@ def record_episode(arm: CompliantController, gello: Gello, image_recorder: Image
                 events["exit_early"] = False
                 break
 
+            force_norm = np.linalg.norm(arm.get_wrench())
+            torque_norm = np.linalg.norm(arm.get_wrench()[3:])
+            if force_norm > safety_configs["max_force_torque"][0] or torque_norm > safety_configs["max_force_torque"][1]:
+                log.warning("Force/torque norm is too high: %.2f/%.2f", force_norm, torque_norm)
+                events["exit_early"] = True
+                events["rerecord"] = True
+                break
+
             loop_start = time.perf_counter()
 
             all_values = {}
             all_values.update(get_observations(arm, image_recorder))
-            all_values.update(set_action(arm, gello))
+            all_values.update(set_action(arm, gello, safety_configs))
 
             all_values = {k: v.astype(np.float32) for k, v in all_values.items()}
 
@@ -351,6 +372,7 @@ def main():
             record_episode(
                 arm, gello, image_recorder, dataset,
                 ds_cfg["fps"], ds_cfg["episode_time_s"], ds_cfg["task"], events,
+                cfg["safety_parameters"],
             )
 
             if events["stop"]:  # Don't save episode if stopping recording
