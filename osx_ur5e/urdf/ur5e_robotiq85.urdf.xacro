@@ -30,7 +30,16 @@
 
   <!-- Attach Robotiq 2F-85 to tool0 -->
   <xacro:robotiq_85_gripper prefix="" parent="tool0">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <origin xyz="0.01 0 0" rpy="0 ${-pi/2} ${pi/2}"/>
   </xacro:robotiq_85_gripper>
+
+  <!-- TCP: gripper tip link (163mm from robotiq_85_base_link along its X axis) -->
+  <!-- Matches the dual-arm setup in osx_end_effector.urdf.xacro -->
+  <joint name="gripper_tip_joint" type="fixed">
+    <parent link="robotiq_85_base_link"/>
+    <child link="gripper_tip_link"/>
+    <origin xyz="0.163 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="gripper_tip_link"/>
 
 </robot>
