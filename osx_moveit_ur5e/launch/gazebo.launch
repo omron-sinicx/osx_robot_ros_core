@@ -13,7 +13,7 @@
   </include>
 
   <!-- Set the robot urdf on the parameter server -->
-  <param name="robot_description" command="xacro taskboard:=false gazebo:=false '$(find osx_scu_hand)/urdf/ur5e_with_scu_hand.urdf.xacro'" />
+  <param name="robot_description" command="xacro '$(find ur_description)/urdf/ur5e.xacro'" />
 
   <!-- Unpause the simulation after loading the robot model -->
   <arg name="unpause" value="$(eval '' if arg('paused') else '-unpause')" />
