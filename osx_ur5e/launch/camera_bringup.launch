@@ -4,7 +4,7 @@
   <arg name="camera_name"	value="front_camera"/>
   
   <arg name="camera_serial_no"	value="242322072216"/>
-  <arg name="camera_fps"	default="30"/>
+  <arg name="camera_fps"	default="60"/>
   <arg name="depth_fps"	  default="$(arg camera_fps)"/>
   <arg name="camera_width"	default="640"/>
   <arg name="camera_height"	default="480"/>

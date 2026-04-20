@@ -288,6 +288,16 @@ def wait_for_reset(reset_time_s, events):
     print()
 
 
+def wait_for_keypress_reset(events):
+    """Block until Enter/Space is pressed to start the next episode."""
+    events["exit_early"] = False
+    print("  Press Enter to start next episode...", flush=True)
+    while not events["exit_early"] and not events["stop"] and not rospy.is_shutdown():
+        rospy.sleep(0.1)
+    events["exit_early"] = False
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -384,7 +394,7 @@ def main():
                 log.info("Discarding episode, re-recording...")
                 events["rerecord"] = False
                 dataset.clear_episode_buffer()
-                wait_for_reset(ds_cfg["reset_time_s"], events)
+                wait_for_keypress_reset(events)
                 continue
 
             dataset.save_episode()
@@ -392,7 +402,7 @@ def main():
             log.info("Saved episode %d (%d total in dataset)", recorded, dataset.num_episodes)
 
             if recorded < ds_cfg["num_episodes"] and not events["stop"]:
-                wait_for_reset(ds_cfg["reset_time_s"], events)
+                wait_for_keypress_reset(events)
     finally:
         log.info("Finalizing dataset...")
         dataset.finalize()

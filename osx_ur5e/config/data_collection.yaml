@@ -1,6 +1,6 @@
 # ================== Dataset Configuration ==================
 dataset:
-  repo_id: test_dataset
+  repo_id: test_wipe_osx
   task: "Pick and place the object"
   root: /root/osx-ur/dependencies/comet/data # null = lerobot default (~/.cache/huggingface/lerobot)
   fps: 50
@@ -51,22 +51,31 @@ image_writer:
 
 # ================== Controller Configuration ==================
 controller:
+  type: "fdcc"
+  base_link: "base_link"
+  ee_link: "tool0"
+  use_velocity_interface: false
+  reset_time: 2.0
+  actions_as_deltas: false
+  # FDCC parameters
   mode: "spring-mass-damper" # "parallel"
   p_gains: [0.035, 0.035, 0.035, 0.1, 0.1, 0.1]
   d_gains: [0, 0, 0, 0, 0, 0]
   selection_matrix: [1, 1, 1, 1, 1, 1]
   error_scale: 0.8
   iterations: 1.0
-  stiffness: 2000
+  stiffness: 1000
+
+safety_parameters:
+  max_force_torque: [100, 5]
+  max_delta_translation: 0.05
+  max_delta_rotation: [5.0, 5.0, 15.0]
+  workspace_range:
+    x: [ 0.0, 0.90]
+    y: [-0.9, 0.90]
+    z: [ -0.0, 0.80]
   stiffness_limits:
     translation: [50, 1500]
     rotation: [10, 1000]
 
-safety_parameters:
-  max_force_torque: [30, 5]
-  max_delta_translation: 0.05
-  max_delta_rotation: [5.0, 5.0, 15.0]
-  workspace_range:
-    x: [ 0.0, 0.5]
-    y: [-0.9, 0.50]
-    z: [ -0.0, 0.80]
+init_qpos: [0.4289, -1.229, 1.461, -1.7436, -1.4361, 0.1035]

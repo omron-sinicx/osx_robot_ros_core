@@ -1,10 +1,11 @@
-import dm_env
+from comet.common.utils.vt_utils import process_factored_action_dict
 import rospy
 import numpy as np
 from omegaconf import DictConfig
 
 from osx_robot_control import math_utils
 from osx_ur5e.base_env import ORIENTATION_REPRESENTATIONS, BaseEnv
+from osx_ur5e.timestep import TimeStep, STEP_MID, STEP_LAST
 from ur_control import transformations
 
 
@@ -27,35 +28,20 @@ class FDCCEnv(BaseEnv):
         super().load_params(config)
 
         # Parameters
-        self.control_frequency = config.control_frequency
+        self.control_frequency = config.dataset.fps
         self.dt = 1. / self.control_frequency
 
-        self.cam_names = config.camera_names
+        self.cam_names = config.cameras.keys()
         rospy.loginfo(f"Cameras to record from: {self.cam_names}")
-        self.max_force_torque = config.controller.max_force_torque
-        self.translation_stiffness_limits = config.controller.stiffness_limits.translation
-        self.rotation_stiffness_limits = config.controller.stiffness_limits.rotation
-        self.max_delta_translation = config.controller.max_delta_translation
-        self.max_delta_rotation = config.controller.max_delta_rotation
+        self.max_force_torque = config.safety_parameters.max_force_torque
+        self.translation_stiffness_limits = config.safety_parameters.stiffness_limits.translation
+        self.rotation_stiffness_limits = config.safety_parameters.stiffness_limits.rotation
+        self.max_delta_translation = config.safety_parameters.max_delta_translation
+        self.max_delta_rotation = np.deg2rad(config.safety_parameters.max_delta_rotation)
         self.controller_config = config.controller
-        self.initial_config = config.task.trajectory.init_qpos
-
-
-        self.task_config = config.task
+        self.initial_config = config.init_qpos
 
         self.actions_as_deltas = config.controller.actions_as_deltas
-        self.stiffness_representation = config.controller.stiffness_representation
-        self.translation_scale = config.controller.translation_scale
-        self.rotation_scale = config.controller.rotation_scale
-        assert self.stiffness_representation in STIFFNESS_REPRESENTATIONS, (
-            "Error: unsupported stiffness representation"
-            "Inputted : {}, Supported modes: {}".format(self.stiffness_representation, STIFFNESS_REPRESENTATIONS)
-        )
-        self.orientation_representation = config.controller.orientation_representation
-        assert self.orientation_representation in ORIENTATION_REPRESENTATIONS, (
-            "Error: unsupported orientation representation"
-            "Inputted : {}, Supported modes: {}".format(self.orientation_representation, ORIENTATION_REPRESENTATIONS)
-        )
 
     def set_controller_parameters(self):
         p_gains = self.controller_config['p_gains']
@@ -63,10 +49,9 @@ class FDCCEnv(BaseEnv):
         error_scale = self.controller_config['error_scale']
         iterations = self.controller_config['iterations']
 
-        self.arm.set_control_mode(self.config.controller.mode)
+        self.arm.set_control_mode(self.controller_config.mode)
         self.arm.update_pd_gains(p_gains, d_gains)
-        self.arm.set_position_control_mode(enable=True)
-        self.arm.update_selection_matrix(self.config.controller.selection_matrix)
+        self.arm.update_selection_matrix(self.controller_config.selection_matrix)
         self.arm.set_solver_parameters(error_scale=error_scale, iterations=iterations, publish_state_feedback=True)
         self.arm.auto_switch_controllers = False
         self.arm.async_mode = True
@@ -82,52 +67,63 @@ class FDCCEnv(BaseEnv):
 
     def reset(self, move_robot=True):
         if move_robot:
-            assert self.reference_trajectory is not None, "Reference trajectory not set"
             self.set_controller_parameters()
             self.arm.activate_joint_trajectory_controller()
 
         return super().reset(move_robot=move_robot)
 
-    def step(self, action) -> dm_env.TimeStep:
+    def step(self, action) -> TimeStep:
         # Check force/torque limits here and if needed return StepType.LAST to end episode.
         if not self.check_contact_force_limits():
             self.deactivate_compliance_control()
-            return dm_env.TimeStep(
-                step_type=dm_env.StepType.LAST,
+            return TimeStep(
+                step_type=STEP_LAST,
                 reward=self.get_reward(),
                 discount=None,
                 observation=self.get_observation())
 
-        self.set_compliant_control_action(action)
+        controller_action = self.prepare_action(action)
+        self.set_compliant_control_action(controller_action)
 
         self.rate.sleep()
 
-        return dm_env.TimeStep(
-            step_type=dm_env.StepType.MID,
+        return TimeStep(
+            step_type=STEP_MID,
             reward=self.get_reward(),
             discount=None,
             observation=self.get_observation())
+
+    def prepare_action(self, action):
+        """
+            Prepare the action for the controller.
+        """
+        if "action.contact_direction" in action:  # FVT mode
+            fvt_action = process_factored_action_dict(action,
+                                                      default_stiffness=2400.0,
+                                                      default_stiffness_rot=2400.0,
+                                                      characteristic_length=0.1,
+                                                      use_isotropic_stiffness=False,
+                                                      controller_type="variable_kp",
+                                                      orientation_representation="quaternion")
+            controller_action = {
+                "action.position": fvt_action[0:3],
+                "action.orientation": fvt_action[3:7],
+                "action.stiffness_diag": fvt_action[7:13],
+            }
+        return controller_action
 
     def set_compliant_control_action(self, action):
         """
             actions: dictionary of actions for each robot
         """
-
-        if self.stiffness_representation == 'cholesky':
-            stiffness_trans_matrix = math_utils.cholesky_vector_to_spd(action['action.stiffness_cholesky'][:6])
-            stiffness_rot_matrix = math_utils.cholesky_vector_to_spd(action['action.stiffness_cholesky'][6:])
-            # Only diagonal values are supported for now.
-            stiff_trans = np.clip(np.diag(stiffness_trans_matrix), *self.translation_stiffness_limits)
-            stiff_rot = np.clip(np.diag(stiffness_rot_matrix), *self.rotation_stiffness_limits)
-        elif self.stiffness_representation == 'diag':
-            stiff_trans = action['action.stiffness_diag'][:3]
-            stiff_rot = action['action.stiffness_diag'][3:]
+        stiff_trans = action['action.stiffness_diag'][:3]
+        stiff_rot = action['action.stiffness_diag'][3:]
 
         stiff_trans = np.interp(stiff_trans, [-1, 1], self.translation_stiffness_limits)
         stiff_rot = np.interp(stiff_rot, [-1, 1], self.rotation_stiffness_limits)
 
         stiff_act = np.concatenate([stiff_trans, stiff_rot]).astype(np.int64)
-        
+
         # Cap the bandwidth to change the controller's parameters to 40hz and only if the change is significant
         # TODO: make this more robust
         if rospy.get_time() - self.last_stiffness_command_stamp > 0.025 and \
@@ -141,14 +137,11 @@ class FDCCEnv(BaseEnv):
         current_pose = self.arm.end_effector()
         if self.actions_as_deltas:
             assert len(action_rotation) == 3, "Rotation actions must be 3D for delta actions"
-            delta_translation = self.clip_delta_actions(action_translation * self.translation_scale)
-            delta_orientation = self.clip_delta_actions(action_rotation * self.rotation_scale)
-        else: # actions are absolute positions
-            assert len(action_rotation) == 6, "Rotation actions must be 6D for absolute actions"
-            action_rotation_quaternion = transformations.quaternion_from_ortho6(action_rotation)
-            delta_translation = self.clip_delta_actions(action_translation - current_pose[:3])
-            delta_orientation = self.clip_delta_actions(transformations.quaternions_orientation_error(action_rotation_quaternion, current_pose[3:]))
-        
+            delta_translation, delta_orientation = self.clip_delta_actions(action_translation * self.translation_scale, action_rotation * self.rotation_scale)
+        else:  # actions are absolute positions
+            assert len(action_rotation) == 4, "Rotation actions must be quaternion (4D) for absolute actions"
+            delta_translation, delta_orientation = self.clip_delta_actions(action_translation - current_pose[:3], transformations.quaternions_orientation_error(action_rotation, current_pose[3:]))
+
         target_position = current_pose[:3] + delta_translation
         target_orientation = transformations.rotate_quaternion_by_rpy(*delta_orientation, current_pose[3:])
 

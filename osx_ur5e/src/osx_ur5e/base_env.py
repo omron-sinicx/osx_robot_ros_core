@@ -1,8 +1,9 @@
 import collections
-import dm_env
 import rospy
 import numpy as np
 from omegaconf import DictConfig
+
+from osx_ur5e.timestep import TimeStep, STEP_FIRST
 
 
 from osx_gym_env.utils import ImageRecorder
@@ -48,13 +49,11 @@ class BaseEnv:
 
     def load_params(self, config):
         self.config = config
-        self.num_waypoints = config.task.trajectory.num_waypoints
-        self.initial_config = config.task.trajectory.init_qpos
+        self.initial_config = config.init_qpos
 
     def go_home(self):
         assert self.arm.dashboard_services.activate_ros_control_on_ur(), "Failed to activate ROS control on UR"
-        home = [-1.6753, -2.3627, 1.9633, -1.1708, -1.5643, 0.2161]
-        self.arm.set_joint_positions(target_time=5.0, positions=home, wait=True)
+        self.arm.set_joint_positions(target_time=5.0, positions=self.initial_config, wait=True)
 
     def get_eef_components(self):
         eef_pos = self.get_eef_pose(orientation_representation='quaternion')
@@ -104,13 +103,13 @@ class BaseEnv:
         if move_robot:
             # Move away from contact
             success = self.arm.move_relative(target_time=1.0, transformation=[0, 0, -0.05, 0, 0, 0], relative_to_tcp=True, wait=True)
-            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.config.task.trajectory.init_qpos} {success}"
+            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.config.init_qpos} {success}"
             # Move to the initial configuration
             success = self.arm.set_joint_positions(target_time=self.config.controller.reset_time, positions=self.initial_config, wait=True)
-            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.config.task.trajectory.init_qpos} {success}"
-        
-        return dm_env.TimeStep(
-            step_type=dm_env.StepType.FIRST,
+            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.config.init_qpos} {success}"
+
+        return TimeStep(
+            step_type=STEP_FIRST,
             reward=self.get_reward(),
             discount=None,
             observation=self.get_observation())
@@ -126,8 +125,10 @@ class BaseEnv:
         """
         # Safety limits: max force
         current_wrench = self.arm.get_wrench()
-        if np.any(np.greater(np.abs(current_wrench), self.max_force_torque)):
-            rospy.logerr('Maximum force/torque exceeded {}'.format(np.round(current_wrench, 3)))
+        force_norm = np.linalg.norm(current_wrench)
+        torque_norm = np.linalg.norm(current_wrench[3:])
+        if force_norm > self.max_force_torque[0] or torque_norm > self.max_force_torque[1]:
+            rospy.logerr(f'Maximum force/torque exceeded {force_norm}/{self.max_force_torque[0]} {torque_norm}/{self.max_force_torque[1]}')
             return False
         return True
 
