@@ -52,7 +52,8 @@ cartesian_compliance_controller:
     rot_y: 20
     rot_z: 20
 
-    use_parallel_force_position_control: True
+    use_parallel_force_position_control: False
+    use_selection_matrix_in_gripper_frame: False
     sel_x: 1.0 # motion control only
     sel_y: 1.0
     sel_z: 1.0 # force control
@@ -61,8 +62,8 @@ cartesian_compliance_controller:
     sel_az: 1.0
 
   solver:
-    error_scale: 0.01 # For gazebo | For real 0.3
-    iterations: 5 # For gazebo | For real 10
+    error_scale: 0.01 # For gazebo | For real 0.8
+    iterations: 1 # For gazebo | For real 1
 
   pd_gains:
     trans_x: {p: 0.01}

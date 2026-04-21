@@ -53,5 +53,28 @@
     <arg name="enable_depth"       value="$(arg enable_depth)"/>
   </include>
 
+  <!-- <include file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
+    <arg name="time" value="5" />
+    <arg name="pkg" value="realsense2_camera" />
+    <arg name="file" value="rs_camera.launch" />
+    <arg name="node_name" value="wrist_camera_delayed" />
+    <arg name="value" value="camera:=$(arg camera_name2)
+                            serial_no:=$(arg camera_serial_no2)
+                            tf_prefix:=calibrated_$(arg camera_name2)
+                            enable_pointcloud:=false
+                            align_depth:=$(arg enable_depth)
+                            fisheye_fps:=$(arg camera_fps)
+                            depth_width:=$(arg camera_width)
+                            depth_height:=$(arg camera_height)
+                            depth_fps:=$(arg depth_fps)
+                            color_fps:=$(arg camera_fps)
+                            color_width:=$(arg camera_width)
+                            color_height:=$(arg camera_height)
+                            enable_infra1:=false
+                            enable_infra2:=false
+                            initial_reset:=$(arg initial_reset)
+                            enable_depth:=$(arg enable_depth)" />
+  </include> -->
+
 
 </launch>

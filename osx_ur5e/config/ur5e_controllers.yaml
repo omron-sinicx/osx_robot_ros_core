@@ -155,7 +155,8 @@ cartesian_compliance_controller:
       rot_y: 20
       rot_z: 20
       
-      use_parallel_force_position_control: True
+      use_parallel_force_position_control: False
+      use_selection_matrix_in_gripper_frame: False
       
       sel_x: 1.0 # motion control only
       sel_y: 1.0

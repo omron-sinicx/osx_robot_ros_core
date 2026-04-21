@@ -99,8 +99,8 @@ class FDCCEnv(BaseEnv):
         """
         if "action.contact_direction" in action:  # FVT mode
             fvt_action = process_factored_action_dict(action,
-                                                      default_stiffness=1000.0,
-                                                      default_stiffness_rot=1000.0,
+                                                      default_stiffness=self.controller_config.stiffness,
+                                                      default_stiffness_rot=self.controller_config.stiffness,
                                                       characteristic_length=0.1,
                                                       use_isotropic_stiffness=False,
                                                       controller_type="variable_kp",

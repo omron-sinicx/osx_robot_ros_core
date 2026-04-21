@@ -292,12 +292,6 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"actions_as_deltas: {actions_as_deltas}")
 
     # ------------------------------------------------------------------
-    # Move home once
-    # ------------------------------------------------------------------
-    logger.info("Moving to home position...")
-    env.go_home()
-
-    # ------------------------------------------------------------------
     # Episode loop
     # ------------------------------------------------------------------
     total_force_error = 0.0
@@ -321,7 +315,11 @@ def main(cfg: DictConfig) -> None:
         # Reset and wait for user confirmation
         env.reset(move_robot=True)
 
+        # ------------------------------------------------------------------
+        # Move to the first step's qpos position
+        # ------------------------------------------------------------------
         frame = dataset[0]
+        logger.info("Moving to home position...")
         env.arm.set_joint_positions(target_time=1.0, positions=frame["observation.qpos"], wait=True)
 
         input(f"\n  Episode {episode_idx} ({ep_len} steps) — press Enter to start test-replay...")
@@ -356,7 +354,6 @@ def main(cfg: DictConfig) -> None:
 
                 # --- Build and apply action ---
                 env_action = build_env_action(frame, action_type, replay_action_keys)
-                env_action["action.stiffness_diag"] = np.ones(6) * 1200.0
                 timestep = env.step(env_action)
 
                 # --- Record actual state AFTER the step ---
@@ -365,13 +362,6 @@ def main(cfg: DictConfig) -> None:
 
                 if include_stiffness:
                     actual_stiffness[i] = float(np.mean(env.last_stiffness_params))
-
-                # if i % 50 == 0:
-                #     logger.info(
-                #         f"step {i:4d} | pos_err: {np.linalg.norm(actual_eef_pos[i] - dataset_eef_pos[i]):.4f} m"
-                #         f" | F_actual: {actual_force_norm[i]:.2f} N"
-                #         f" | F_dataset: {dataset_force_norm[i]:.2f} N"
-                #     )
 
                 if timestep.last():
                     logger.warning(f"Episode {episode_idx} ended early at step {i} (force limit exceeded)")
