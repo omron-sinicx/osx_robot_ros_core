@@ -3,6 +3,7 @@ dataset:
   repo_id: test_wipe_osx
   task: "Pick and place the object"
   root: /root/osx-ur/dependencies/comet/data # null = lerobot default (~/.cache/huggingface/lerobot)
+  overwrite: false
   fps: 50
   num_episodes: 50
   episode_time_s: 60.0
@@ -64,10 +65,10 @@ controller:
   selection_matrix: [1, 1, 1, 1, 1, 1]
   error_scale: 0.8
   iterations: 1.0
-  stiffness: 1000
+  stiffness: 1500
 
 safety_parameters:
-  max_force_torque: [100, 5]
+  max_force_torque: [70, 10]
   max_delta_translation: 0.05
   max_delta_rotation: [5.0, 5.0, 15.0]
   workspace_range:

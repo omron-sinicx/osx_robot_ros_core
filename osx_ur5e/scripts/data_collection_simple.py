@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Data collection via Gello teleoperation, saved as a LeRobotDataset.
 
-Uses Hydra for configuration management.
-
 Usage:
-    rosrun osx_ur5e data_collection.py
-    rosrun osx_ur5e data_collection.py dataset.repo_id=user/my_dataset dataset.num_episodes=5
-    rosrun osx_ur5e data_collection.py dataset.overwrite=true
+    rosrun osx_ur5e data_collection.py --config path/to/data_collection.yaml
+    rosrun osx_ur5e data_collection.py --config path/to/data_collection.yaml \
+        --repo-id user/override_name --num-episodes 5
 
 Controls during recording:
     Enter  - end current episode early
@@ -14,19 +12,17 @@ Controls during recording:
     q      - stop recording and finalize dataset
 """
 
+import argparse
 import logging
 import math
 import shutil
 import sys
 import time
-import yaml
 from pathlib import Path
 
-import hydra
 import numpy as np
+import yaml
 import rospy
-from omegaconf import DictConfig, OmegaConf
-from pynput import keyboard as kb
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
@@ -39,40 +35,88 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-
+from pynput import keyboard as kb
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from osx_gello.gello import Gello
 from osx_gym_env.utils import ImageRecorder
 from ur_control import transformations
 from ur_control.fzi_cartesian_compliance_controller import CompliantController
 
+OBS_STR = "observation"
+ACTION = "action"
+
 console = Console()
 log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Feature construction
+# Config loading
 # ---------------------------------------------------------------------------
 
-def build_features(cfg: DictConfig) -> dict:
-    """Build a LeRobotDataset feature dict from Hydra cameras/states/actions."""
+def load_config(path: str) -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def apply_overrides(cfg: dict, args: argparse.Namespace) -> dict:
+    """Override YAML dataset values with any CLI args that were explicitly set."""
+    overrides = {
+        "repo_id": args.repo_id,
+        "task": args.task,
+        "root": args.root,
+        "fps": args.fps,
+        "num_episodes": args.num_episodes,
+        "episode_time_s": args.episode_time_s,
+        "reset_time_s": args.reset_time_s,
+    }
+    for key, val in overrides.items():
+        if val is not None:
+            cfg["dataset"][key] = val
+    return cfg
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Collect teleoperation data with Gello + UR5e")
+    p.add_argument(
+        "--config",
+        default="config/data_collection.yaml",
+        help="Path to the YAML config file relative to osx_ur5e directory",
+    )
+    # Optional overrides for every dataset field
+    p.add_argument("--repo-id",        default=None, help="Override dataset.repo_id")
+    p.add_argument("--task",           default=None, help="Override dataset.task")
+    p.add_argument("--root",           default=None, help="Override dataset.root")
+    p.add_argument("--fps",            default=None, type=int)
+    p.add_argument("--num-episodes",   default=None, type=int)
+    p.add_argument("--episode-time-s", default=None, type=float)
+    p.add_argument("--reset-time-s",   default=None, type=float)
+    p.add_argument("--resume", action="store_true", help="Resume recording into an existing dataset")
+    return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Feature construction (mirrors comet's build_features)
+# ---------------------------------------------------------------------------
+
+def build_features(cfg: dict) -> dict:
+    """Build a LeRobotDataset feature dict from YAML cameras/states/actions."""
     features = {}
 
-    for cam_name, cam_info in cfg.cameras.items():
+    for cam_name, cam_info in cfg.get("cameras", {}).items():
         features[f"observation.images.{cam_name}"] = {
             "dtype": "video",
-            "shape": (cam_info.height, cam_info.width, cam_info.channels),
+            "shape": (cam_info["height"], cam_info["width"], cam_info["channels"]),
             "names": ["height", "width", "channels"],
         }
 
-    for key, shape in cfg.states.items():
+    for key, shape in cfg.get("states", {}).items():
         features[key] = {
             "dtype": "float32",
             "shape": tuple(shape),
             "names": None,
         }
 
-    for key, shape in cfg.actions.items():
+    for key, shape in cfg.get("actions", {}).items():
         features[key] = {
             "dtype": "float32",
             "shape": tuple(shape),
@@ -86,7 +130,7 @@ def build_features(cfg: DictConfig) -> dict:
 # Keyboard listener
 # ---------------------------------------------------------------------------
 
-def start_keyboard_listener(events: dict):
+def start_keyboard_listener(events):
     """Start a pynput keyboard listener for episode control.
 
     Keys:
@@ -105,6 +149,7 @@ def start_keyboard_listener(events: dict):
                 events["rerecord"] = True
                 events["exit_early"] = True
         except AttributeError:
+            # Special key (Enter, Space, etc.)
             if key in (kb.Key.enter, kb.Key.space):
                 events["exit_early"] = True
 
@@ -117,7 +162,7 @@ def start_keyboard_listener(events: dict):
 # Robot I/O
 # ---------------------------------------------------------------------------
 
-def get_observations(arm: CompliantController, image_recorder: ImageRecorder) -> dict:
+def get_observations(arm: CompliantController, image_recorder: ImageRecorder):
     eef = arm.end_effector()
     eef_velocity = arm.end_effector_velocity()
     obs = {
@@ -135,7 +180,7 @@ def get_observations(arm: CompliantController, image_recorder: ImageRecorder) ->
     return obs
 
 
-def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -> dict:
+def set_action(arm: CompliantController, gello: Gello, safety_configs: dict):
     gello_joints = gello.joint_angles()
     current_pose = arm.end_effector()
     target_pose = arm.end_effector(joint_angles=gello_joints)
@@ -143,14 +188,14 @@ def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -
     delta_translation = target_pose[:3] - current_pose[:3]
     delta_rotation = transformations.quaternions_orientation_error(target_pose[3:], current_pose[3:])
 
-    max_delta_rotation = np.deg2rad(safety_cfg.max_delta_rotation)
-    clipped_delta_translation = np.clip(delta_translation, -safety_cfg.max_delta_translation, safety_cfg.max_delta_translation)
+    max_delta_rotation = np.deg2rad(safety_configs["max_delta_rotation"])
+    clipped_delta_translation = np.clip(delta_translation, -safety_configs["max_delta_translation"], safety_configs["max_delta_translation"])
     clipped_delta_orientation = np.clip(delta_rotation, -max_delta_rotation, max_delta_rotation)
 
     next_position = current_pose[:3] + clipped_delta_translation
-    next_position[0] = np.clip(next_position[0], safety_cfg.workspace_range.x[0], safety_cfg.workspace_range.x[1])
-    next_position[1] = np.clip(next_position[1], safety_cfg.workspace_range.y[0], safety_cfg.workspace_range.y[1])
-    next_position[2] = np.clip(next_position[2], safety_cfg.workspace_range.z[0], safety_cfg.workspace_range.z[1])
+    next_position[0] = np.clip(next_position[0], safety_configs["workspace_range"]["x"][0], safety_configs["workspace_range"]["x"][1])
+    next_position[1] = np.clip(next_position[1], safety_configs["workspace_range"]["y"][0], safety_configs["workspace_range"]["y"][1])
+    next_position[2] = np.clip(next_position[2], safety_configs["workspace_range"]["z"][0], safety_configs["workspace_range"]["z"][1])
     next_orientation = transformations.rotate_quaternion_by_rpy(*clipped_delta_orientation, current_pose[3:])
     next_target = np.concatenate([next_position, next_orientation])
 
@@ -171,19 +216,9 @@ def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -
 # Record loop
 # ---------------------------------------------------------------------------
 
-def record_episode(
-    arm: CompliantController,
-    gello: Gello,
-    image_recorder: ImageRecorder,
-    dataset: LeRobotDataset,
-    cfg: DictConfig,
-    events: dict,
-) -> None:
-    ds_cfg = cfg.dataset.dataset
-    safety_cfg = cfg.controller.safety_parameters
-    dt = 1.0 / ds_cfg.fps
-    total_steps = math.ceil(ds_cfg.episode_time_s * ds_cfg.fps)
-
+def record_episode(arm: CompliantController, gello: Gello, image_recorder: ImageRecorder, dataset: LeRobotDataset, fps: int, episode_time_s: float, task: str, events: dict, safety_configs: dict):
+    dt = 1.0 / fps
+    total_steps = math.ceil(episode_time_s * fps)
     arm.zero_ft_sensor()
     arm.activate_cartesian_controller()
 
@@ -202,17 +237,17 @@ def record_episode(
     )
 
     with progress:
-        task_id = progress.add_task("record", total=total_steps, hz=ds_cfg.fps)
+        task_id = progress.add_task("record", total=total_steps, hz=fps)
         start_t = time.perf_counter()
 
-        while time.perf_counter() - start_t < ds_cfg.episode_time_s and not rospy.is_shutdown():
+        while time.perf_counter() - start_t < episode_time_s and not rospy.is_shutdown():
             if events["exit_early"] or events["stop"]:
                 events["exit_early"] = False
                 break
 
             force_norm = np.linalg.norm(arm.get_wrench())
             torque_norm = np.linalg.norm(arm.get_wrench()[3:])
-            if force_norm > safety_cfg.max_force_torque[0] or torque_norm > safety_cfg.max_force_torque[1]:
+            if force_norm > safety_configs["max_force_torque"][0] or torque_norm > safety_configs["max_force_torque"][1]:
                 log.warning("Force/torque norm is too high: %.2f/%.2f", force_norm, torque_norm)
                 events["exit_early"] = True
                 events["rerecord"] = True
@@ -222,15 +257,16 @@ def record_episode(
 
             all_values = {}
             all_values.update(get_observations(arm, image_recorder))
-            all_values.update(set_action(arm, gello, safety_cfg))
+            all_values.update(set_action(arm, gello, safety_configs))
+
             all_values = {k: v.astype(np.float32) for k, v in all_values.items()}
 
-            dataset.add_frame({**all_values, "task": ds_cfg.task})
+            dataset.add_frame({**all_values, "task": task})
 
             elapsed = time.perf_counter() - loop_start
             sleep_time = dt - elapsed
             if sleep_time < 0:
-                log.warning("Loop running slow: %.1f Hz (target %d Hz)", 1.0 / elapsed, ds_cfg.fps)
+                log.warning("Loop running slow: %.1f Hz (target %d Hz)", 1.0 / elapsed, fps)
             else:
                 rospy.sleep(sleep_time)
 
@@ -240,7 +276,7 @@ def record_episode(
     arm.activate_joint_trajectory_controller()
 
 
-def wait_for_reset(reset_time_s: float, events: dict) -> None:
+def wait_for_reset(reset_time_s, events):
     """Countdown during environment reset, interruptible by Enter."""
     start = time.perf_counter()
     while time.perf_counter() - start < reset_time_s:
@@ -253,7 +289,7 @@ def wait_for_reset(reset_time_s: float, events: dict) -> None:
     print()
 
 
-def wait_for_keypress_reset(events: dict) -> None:
+def wait_for_keypress_reset(events):
     """Block until Enter/Space is pressed to start the next episode."""
     events["exit_early"] = False
     print("  Press Enter to start next episode...", flush=True)
@@ -267,17 +303,14 @@ def wait_for_keypress_reset(events: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-@hydra.main(config_path="/root/osx-ur/dependencies/comet/configs",
-            config_name="blackboard_wipe",
-            version_base=None)
-def main(cfg: DictConfig) -> None:
+def main():
+    args = parse_args()
+    cfg = load_config(str(Path(__file__).parent.parent / args.config))
+    cfg = apply_overrides(cfg, args)
 
-    ds_cfg = cfg.dataset
-    controller_cfg = cfg.controller
-    features = build_features(ds_cfg)
-    num_camera_threads = ds_cfg.image_writer.threads_per_camera * len(ds_cfg.cameras)
-    repo_id = ds_cfg.dataset.repo_id[0]
-    dataset_dir = Path(ds_cfg.dataset.dir) / repo_id
+    ds_cfg = cfg["dataset"]
+    features = build_features(cfg)
+    num_camera_threads = cfg["image_writer"]["threads_per_camera"] * len(cfg.get("cameras", {}))
 
     rospy.init_node("data_collection")
 
@@ -290,70 +323,69 @@ def main(cfg: DictConfig) -> None:
     log.info("Initializing hardware...")
     gello = Gello()
     arm = CompliantController(gripper_type=None)
-    arm.set_control_mode(controller_cfg.mode)
-    arm.update_pd_gains(OmegaConf.to_container(controller_cfg.p_gains), OmegaConf.to_container(controller_cfg.d_gains))
-    arm.update_selection_matrix(OmegaConf.to_container(controller_cfg.selection_matrix))
-    arm.set_solver_parameters(error_scale=controller_cfg.error_scale, iterations=controller_cfg.iterations, publish_state_feedback=True)
-    arm.update_stiffness(controller_cfg.stiffness * np.ones(6))
-    arm.current_stiffness = np.array(controller_cfg.stiffness * np.ones(6))
+    arm.set_control_mode(cfg["controller"]["mode"])
+    arm.update_pd_gains(cfg["controller"]["p_gains"], cfg["controller"]["d_gains"])
+    arm.update_selection_matrix(cfg["controller"]["selection_matrix"])
+    arm.set_solver_parameters(error_scale=cfg["controller"]["error_scale"], iterations=cfg["controller"]["iterations"], publish_state_feedback=True)
+    arm.update_stiffness(cfg["controller"]["stiffness"] * np.ones(6))
+    arm.current_stiffness = np.array(cfg["controller"]["stiffness"] * np.ones(6))
     arm.auto_switch_controllers = False
     arm.async_mode = True
     arm.zero_ft_sensor()
 
     image_recorder = (
-        ImageRecorder(init_node=False, camera_names=list(ds_cfg.cameras))
-        if ds_cfg.cameras
+        ImageRecorder(init_node=False, camera_names=list(cfg["cameras"]))
+        if cfg.get("cameras")
         else None
     )
 
-    if ds_cfg.dataset.overwrite or not dataset_dir.exists():
-        if dataset_dir.exists() and dataset_dir.is_dir():
-            confirm = input(f"Dataset directory {dataset_dir} already exists. Overwrite? (y/n): ")
-            if confirm.strip().lower() != "y":
-                log.info("Exiting...")
-                sys.exit(1)
-            shutil.rmtree(dataset_dir)
-
-        log.info("Creating dataset: %s", repo_id)
-        dataset = LeRobotDataset.create(
-            repo_id=repo_id,
-            fps=ds_cfg.dataset.fps,
-            features=features,
-            root=dataset_dir,
-            robot_type=ds_cfg.dataset.robot_type,
-            use_videos=bool(ds_cfg.cameras),
-            image_writer_processes=ds_cfg.image_writer.num_processes,
-            image_writer_threads=num_camera_threads,
-        )
-
-        config_path = dataset_dir / "meta" / "hydra_config.yaml"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w") as f:
-            yaml.safe_dump(OmegaConf.to_container(cfg, resolve=True), f)
-    else:
-        log.info("Resuming dataset: %s", repo_id)
-        dataset = LeRobotDataset(repo_id, root=dataset_dir)
+    if args.resume:
+        log.info("Resuming dataset: %s", ds_cfg["repo_id"])
+        dataset = LeRobotDataset(ds_cfg["repo_id"], root=Path(ds_cfg["root"])/ds_cfg["repo_id"])
         if num_camera_threads:
             dataset.start_image_writer(
-                num_processes=ds_cfg.image_writer.num_processes,
+                num_processes=cfg["image_writer"]["num_processes"],
                 num_threads=num_camera_threads,
             )
+    else:
+        dataset_dir = Path(ds_cfg["root"])/ds_cfg["repo_id"]
+        if dataset_dir.exists():
+            confirm = input(f"Dataset directory {dataset_dir} already exists. Do you want to overwrite it? (y/n): ")
+            if confirm == "y":
+                shutil.rmtree(dataset_dir)
+            else:
+                log.info("Exiting...")
+                sys.exit(1)
+        log.info("Creating dataset: %s", ds_cfg["repo_id"])
+        dataset = LeRobotDataset.create(
+            repo_id=ds_cfg["repo_id"],
+            fps=ds_cfg["fps"],
+            features=features,
+            root=dataset_dir,
+            robot_type=ds_cfg.get("robot_type", "ur5e"),
+            use_videos=bool(cfg.get("cameras")),
+            image_writer_processes=cfg["image_writer"]["num_processes"],
+            image_writer_threads=num_camera_threads,
+        )
 
     events = {"exit_early": False, "rerecord": False, "stop": False}
     start_keyboard_listener(events)
 
-    wait_for_keypress_reset(events)
     try:
         recorded = 0
-        while recorded < ds_cfg.dataset.num_episodes and not events["stop"] and not rospy.is_shutdown():
+        while recorded < ds_cfg["num_episodes"] and not events["stop"] and not rospy.is_shutdown():
             log.info(
                 "Episode %d/%d  [Enter=end episode, r=redo, q=quit]",
                 recorded + 1,
-                ds_cfg.dataset.num_episodes,
+                ds_cfg["num_episodes"],
             )
-            record_episode(arm, gello, image_recorder, dataset, cfg, events)
+            record_episode(
+                arm, gello, image_recorder, dataset,
+                ds_cfg["fps"], ds_cfg["episode_time_s"], ds_cfg["task"], events,
+                cfg["safety_parameters"],
+            )
 
-            if events["stop"]:
+            if events["stop"]:  # Don't save episode if stopping recording
                 log.info("Stopping recording...")
                 dataset.clear_episode_buffer()
                 break
@@ -369,7 +401,7 @@ def main(cfg: DictConfig) -> None:
             recorded += 1
             log.info("Saved episode %d (%d total in dataset)", recorded, dataset.num_episodes)
 
-            if recorded < ds_cfg.dataset.num_episodes and not events["stop"]:
+            if recorded < ds_cfg["num_episodes"] and not events["stop"]:
                 wait_for_keypress_reset(events)
     finally:
         log.info("Finalizing dataset...")
