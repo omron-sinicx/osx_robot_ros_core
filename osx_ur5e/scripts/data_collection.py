@@ -219,6 +219,7 @@ def set_action(arm: CompliantController, gello: Gello, safety_configs: dict):
 def record_episode(arm: CompliantController, gello: Gello, image_recorder: ImageRecorder, dataset: LeRobotDataset, fps: int, episode_time_s: float, task: str, events: dict, safety_configs: dict):
     dt = 1.0 / fps
     total_steps = math.ceil(episode_time_s * fps)
+    arm.zero_ft_sensor()
     arm.activate_cartesian_controller()
 
     progress = Progress(
@@ -324,7 +325,6 @@ def main():
     arm = CompliantController(gripper_type=None)
     arm.set_control_mode(cfg["controller"]["mode"])
     arm.update_pd_gains(cfg["controller"]["p_gains"], cfg["controller"]["d_gains"])
-    arm.set_position_control_mode(enable=True)
     arm.update_selection_matrix(cfg["controller"]["selection_matrix"])
     arm.set_solver_parameters(error_scale=cfg["controller"]["error_scale"], iterations=cfg["controller"]["iterations"], publish_state_feedback=True)
     arm.update_stiffness(cfg["controller"]["stiffness"] * np.ones(6))

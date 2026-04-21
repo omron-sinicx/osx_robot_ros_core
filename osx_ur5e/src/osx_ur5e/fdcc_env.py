@@ -99,8 +99,8 @@ class FDCCEnv(BaseEnv):
         """
         if "action.contact_direction" in action:  # FVT mode
             fvt_action = process_factored_action_dict(action,
-                                                      default_stiffness=2400.0,
-                                                      default_stiffness_rot=2400.0,
+                                                      default_stiffness=1000.0,
+                                                      default_stiffness_rot=1000.0,
                                                       characteristic_length=0.1,
                                                       use_isotropic_stiffness=False,
                                                       controller_type="variable_kp",
@@ -110,6 +110,10 @@ class FDCCEnv(BaseEnv):
                 "action.orientation": fvt_action[3:7],
                 "action.stiffness_diag": fvt_action[7:13],
             }
+        elif "action.position" in action and "action.orientation" in action:  # raw_actions mode
+            controller_action = action
+        else:  # TODO implement VT mode
+            raise ValueError(f"Invalid action: {action}")
         return controller_action
 
     def set_compliant_control_action(self, action):
@@ -119,9 +123,9 @@ class FDCCEnv(BaseEnv):
         stiff_trans = action['action.stiffness_diag'][:3]
         stiff_rot = action['action.stiffness_diag'][3:]
 
-        stiff_trans = np.interp(stiff_trans, [-1, 1], self.translation_stiffness_limits)
-        stiff_rot = np.interp(stiff_rot, [-1, 1], self.rotation_stiffness_limits)
-
+        # stiff_trans = np.clip(stiff_trans, self.translation_stiffness_limits[0], self.translation_stiffness_limits[1])
+        # stiff_rot = np.clip(stiff_rot, self.rotation_stiffness_limits[0], self.rotation_stiffness_limits[1])
+        print(f"Stiffness: {stiff_trans}, {stiff_rot}")
         stiff_act = np.concatenate([stiff_trans, stiff_rot]).astype(np.int64)
 
         # Cap the bandwidth to change the controller's parameters to 40hz and only if the change is significant
