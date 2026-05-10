@@ -240,16 +240,19 @@ def record_episode(
     arm.activate_joint_trajectory_controller()
 
 
-def wait_for_reset(reset_time_s: float, events: dict) -> None:
+def wait_for_reset(arm, gello, safety_cfg, reset_time_s: float, events: dict) -> None:
     """Countdown during environment reset, interruptible by Enter."""
     start = time.perf_counter()
+    arm.activate_cartesian_controller()
     while time.perf_counter() - start < reset_time_s:
         if events["exit_early"] or events["stop"] or rospy.is_shutdown():
             events["exit_early"] = False
             break
         remaining = reset_time_s - (time.perf_counter() - start)
+        set_action(arm, gello, safety_cfg)
         print(f"\r  Reset: {remaining:.0f}s remaining (Enter to skip)  ", end="", flush=True)
-        rospy.sleep(0.5)
+        rospy.sleep(0.1)
+    arm.activate_joint_trajectory_controller()
     print()
 
 
@@ -363,6 +366,8 @@ def main(cfg: DictConfig) -> None:
                 events["rerecord"] = False
                 dataset.clear_episode_buffer()
                 wait_for_keypress_reset(events)
+                wait_for_reset(arm, gello, cfg.controller.safety_parameters, ds_cfg.dataset.reset_time_s, events)
+                wait_for_keypress_reset(events)
                 continue
 
             dataset.save_episode()
@@ -370,6 +375,8 @@ def main(cfg: DictConfig) -> None:
             log.info("Saved episode %d (%d total in dataset)", recorded, dataset.num_episodes)
 
             if recorded < ds_cfg.dataset.num_episodes and not events["stop"]:
+                wait_for_keypress_reset(events)
+                wait_for_reset(arm, gello, cfg.controller.safety_parameters, ds_cfg.dataset.reset_time_s, events)
                 wait_for_keypress_reset(events)
     finally:
         log.info("Finalizing dataset...")

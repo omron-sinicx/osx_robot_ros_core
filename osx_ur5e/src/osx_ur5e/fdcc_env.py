@@ -28,20 +28,20 @@ class FDCCEnv(BaseEnv):
         super().load_params(config)
 
         # Parameters
-        self.control_frequency = config.dataset.fps
+        self.control_frequency = config.dataset.dataset.fps
         self.dt = 1. / self.control_frequency
 
-        self.cam_names = config.cameras.keys()
+        self.cam_names = config.dataset.cameras.keys()
         rospy.loginfo(f"Cameras to record from: {self.cam_names}")
-        self.max_force_torque = config.safety_parameters.max_force_torque
-        self.translation_stiffness_limits = config.safety_parameters.stiffness_limits.translation
-        self.rotation_stiffness_limits = config.safety_parameters.stiffness_limits.rotation
-        self.max_delta_translation = config.safety_parameters.max_delta_translation
-        self.max_delta_rotation = np.deg2rad(config.safety_parameters.max_delta_rotation)
         self.controller_config = config.controller
-        self.initial_config = config.init_qpos
+        self.max_force_torque = self.controller_config.safety_parameters.max_force_torque
+        self.translation_stiffness_limits = self.controller_config.safety_parameters.stiffness_limits.translation
+        self.rotation_stiffness_limits = self.controller_config.safety_parameters.stiffness_limits.rotation
+        self.max_delta_translation = self.controller_config.safety_parameters.max_delta_translation
+        self.max_delta_rotation = np.deg2rad(self.controller_config.safety_parameters.max_delta_rotation)
+        self.initial_config = self.controller_config.init_qpos
 
-        self.actions_as_deltas = config.controller.actions_as_deltas
+        self.actions_as_deltas = self.controller_config.actions_as_deltas
 
     def set_controller_parameters(self):
         p_gains = self.controller_config['p_gains']
