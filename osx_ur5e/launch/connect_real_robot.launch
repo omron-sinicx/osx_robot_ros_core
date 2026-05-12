@@ -49,7 +49,7 @@
     <arg name="namespace" value="/" />
     <arg name="gripper_prefix" value="" />
     <arg name="address" value="$(arg robot_ip)" />
-    <arg name="config" value="cmodel_action_controller_85" />
+    <arg name="config" value="cmodel_action_controller_hande" />
   </include>
 
   <!-- robot model -->
