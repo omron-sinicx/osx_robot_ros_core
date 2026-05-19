@@ -1,0 +1,83 @@
+<?xml version="1.0"?>
+<!--
+  Hand-Eye Calibration launch file for fixed cameras (eye-to-hand).
+  Uses the single UR5e+Robotiq85 URDF (no a_bot/b_bot prefix).
+
+  Usage:
+    # First, start the robot driver:
+    roslaunch osx_ur5e connect_real_robot.launch
+
+    # Then, in a new terminal:
+    roslaunch osx_moveit_config handeye_calibration.launch camera_name:=d435i
+
+  Context tab settings:
+    Sensor configuration: Eye-to-hand
+    Sensor frame:         d435i_color_optical_frame  (or d435_color_optical_frame)
+    Object frame:         handeye_target             (appears after target detection)
+    End-effector frame:   tool0
+    Robot base frame:     base_link
+    Planning group:       manipulator
+-->
+<launch>
+  <arg name="camera_name" default="d435i"
+       doc="Camera to calibrate: d435i, d435, d455_0, d455_1, d455_2, or d455_3"/>
+  <arg name="debug" default="false"/>
+
+  <!-- Camera serial numbers (must match osx_bringup_cameras.launch) -->
+  <arg if="$(eval camera_name == 'd435i')"  name="camera_serial_no" value="943222072344"/>
+  <arg if="$(eval camera_name == 'd435')"   name="camera_serial_no" value="143322073893"/>
+  <arg if="$(eval camera_name == 'd455_0')" name="camera_serial_no" value="138322252534"/>
+  <arg if="$(eval camera_name == 'd455_1')" name="camera_serial_no" value="142422250629"/>
+  <arg if="$(eval camera_name == 'd455_2')" name="camera_serial_no" value="146222253334"/>
+  <arg if="$(eval camera_name == 'd455_3')" name="camera_serial_no" value="141322250927"/>
+
+  <!-- Launch single camera in calibration mode (realsense publishes its own TF) -->
+  <include file="$(find osx_scene_description)/launch/osx_bringup_single_camera.launch">
+    <arg name="camera_name"      value="$(arg camera_name)"/>
+    <arg name="camera_serial_no" value="$(arg camera_serial_no)"/>
+    <arg name="calibration_mode" value="true"/>
+    <arg name="camera_width"     value="1280"/>
+    <arg name="camera_height"    value="720"/>
+    <arg name="camera_fps"       value="15"/>
+    <arg name="initial_reset"    value="true"/>
+  </include>
+
+  <!-- Override SRDF for single robot (not dual-arm) -->
+  <param name="robot_description_semantic"
+         textfile="$(find osx_ur5e)/config/ur5e_robotiq85.srdf"/>
+
+  <!-- Kinematics config for single robot -->
+  <group ns="robot_description_kinematics">
+    <param name="manipulator/kinematics_solver" value="kdl_kinematics_plugin/KDLKinematicsPlugin"/>
+    <param name="manipulator/kinematics_solver_search_resolution" value="0.005"/>
+    <param name="manipulator/kinematics_solver_timeout" value="0.05"/>
+  </group>
+
+  <!-- Planning pipeline (OMPL) -->
+  <group ns="move_group/planning_pipelines">
+    <include ns="ompl" file="$(find osx_moveit_config)/launch/planning_pipeline.launch.xml">
+      <arg name="pipeline" value="ompl"/>
+    </include>
+  </group>
+
+  <!-- Launch MoveIt move_group with single-robot config -->
+  <node name="move_group" pkg="moveit_ros_move_group" type="move_group"
+        respawn="false" output="screen">
+    <param name="allow_trajectory_execution" value="true"/>
+    <param name="max_safe_path_cost" value="1"/>
+    <param name="jiggle_fraction" value="0.05"/>
+    <param name="default_planning_pipeline" value="ompl"/>
+    <param name="capabilities" value="move_group/TfPublisher"/>
+    <param name="planning_scene_monitor/publish_planning_scene" value="true"/>
+    <param name="planning_scene_monitor/publish_geometry_updates" value="true"/>
+    <param name="planning_scene_monitor/publish_state_updates" value="true"/>
+    <param name="planning_scene_monitor/publish_transforms_updates" value="true"/>
+  </node>
+
+  <!-- Launch RViz with HandEyeCalibration panel -->
+  <include file="$(find osx_moveit_config)/launch/moveit_rviz.launch">
+    <arg name="debug"       value="$(arg debug)"/>
+    <arg name="rviz_config" value="$(find osx_moveit_config)/launch/osx_easy_handeye.rviz"/>
+  </include>
+
+</launch>

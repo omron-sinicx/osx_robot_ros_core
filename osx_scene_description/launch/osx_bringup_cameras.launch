@@ -34,14 +34,17 @@
 
   <include file="$(find osx_scene_description)/launch/osx_bringup_single_camera.launch">
     <arg name="camera_name" value="$(arg camera0_name)" />
+    <arg name="calibration_parent" value="base_link" />
+    <arg name="calibration_child" value="$(arg camera0_name)_color_optical_frame" />
     <arg name="camera_serial_no" value="$(arg camera0_serial_no)" />
     <arg name="camera_fps" value="$(arg camera_fps)" />
     <arg name="camera_width" value="$(arg camera_width)" />
     <arg name="camera_height" value="$(arg camera_height)" />
     <arg name="initial_reset" value="$(arg initial_reset)" />
     <arg name="calibration_mode" value="$(arg calibration_mode)" />
+    <arg name="rgb_lock_settings" value="true" />
   </include>
-  
+
   <!-- Delay 2nd camera launch to avoid USB bandwidth contention -->
   <include file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
     <arg name="time" value="5" />
@@ -49,12 +52,15 @@
     <arg name="file" value="osx_bringup_single_camera.launch" />
     <arg name="node_name" value="cam1" />
     <arg name="value" value="camera_name:=$(arg camera1_name)
+                             calibration_parent:=base_link
+                             calibration_child:=$(arg camera1_name)_color_optical_frame
                              camera_serial_no:=$(arg camera1_serial_no)
                              camera_fps:=$(arg camera_fps)
                              camera_width:=$(arg camera_width)
                              camera_height:=$(arg camera_height)
                              initial_reset:=$(arg initial_reset)
-                             calibration_mode:=$(arg calibration_mode)" />
+                             calibration_mode:=$(arg calibration_mode)
+                             rgb_lock_settings:=true" />
   </include>
   
   <!-- <include file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">

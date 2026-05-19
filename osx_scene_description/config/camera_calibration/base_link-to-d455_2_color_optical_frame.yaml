@@ -1,0 +1,11 @@
+calibration_date: "TODO: not yet calibrated (identity placeholder)"
+child: d455_2_color_optical_frame
+parent: base_link
+transform:
+  qw: 1.0
+  qx: 0.0
+  qy: 0.0
+  qz: 0.0
+  x: 0.0
+  y: 0.0
+  z: 0.0

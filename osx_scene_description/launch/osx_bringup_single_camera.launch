@@ -8,7 +8,9 @@
   <!-- Synced block start -->
   <!-- Camera parameters -->
   <arg name="camera_name"	default="a_bot_inside_camera"/>
-  
+  <arg name="calibration_parent"	default="a_bot_ee_link"/>
+  <arg name="calibration_child"	default="$(arg camera_name)_color_optical_frame"/>
+
   <arg name="camera_serial_no"	default="636201000324"/>
   <arg name="camera_fps"	default="15"/>
   <arg name="depth_fps"	  default="$(arg camera_fps)"/>
@@ -17,10 +19,42 @@
   <arg name="initial_reset"	default="true"/>
   <arg name="enable_depth"	default="true"/>
   <arg name="calibration_mode"	default="false"/>
+  <!-- Lock RGB AE/AWB to fixed values (off-default) so two cameras viewing the
+       same scene render identical color. realsense2_camera reads these
+       rosparams in registerDynamicOption() before dynamic_reconfigure is
+       advertised. -->
+  <arg name="rgb_lock_settings"	default="false"/>
+  <arg name="rgb_exposure"      default="166"/>
+  <arg name="rgb_white_balance" default="3500"/>
+  <arg name="rgb_gain"          default="64"/>
+  <arg name="rgb_gamma"         default="300"/>
+  <arg name="rgb_saturation"    default="64"/>
   <!-- Synced block end -->
 
   <param name="osx_vision_server/$(arg camera_name)" type="bool" value="true" />
- 
+
+  <group if="$(arg rgb_lock_settings)" ns="$(arg camera_name)/rgb_camera">
+    <!-- Tuned values (overridable via launch args) -->
+    <param name="enable_auto_exposure"      type="bool"   value="false"/>
+    <param name="enable_auto_white_balance" type="bool"   value="false"/>
+    <param name="auto_exposure_priority"    type="bool"   value="false"/>
+    <param name="exposure"                  type="int"    value="$(arg rgb_exposure)"/>
+    <param name="white_balance"             type="double" value="$(arg rgb_white_balance)"/>
+    <param name="gain"                      type="int"    value="$(arg rgb_gain)"/>
+    <!-- Factory defaults made explicit so identical color rendering is
+         guaranteed across cameras even if the param server happens to carry
+         stale values from a previous run. Verified on D435 (S/N 143322073893)
+         and D435I (S/N 943222072344) at FW 5.16.0.1 via rs-enumerate-devices -o. -->
+    <param name="brightness"                type="int"    value="0"/>
+    <param name="contrast"                  type="int"    value="50"/>
+    <param name="gamma"                     type="int"    value="$(arg rgb_gamma)"/>
+    <param name="hue"                       type="int"    value="0"/>
+    <param name="saturation"                type="int"    value="$(arg rgb_saturation)"/>
+    <param name="sharpness"                 type="int"    value="50"/>
+    <param name="backlight_compensation"    type="bool"   value="false"/>
+    <param name="power_line_frequency"      type="int"    value="3"/>
+  </group>
+
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"             value="$(arg camera_name)"/>
     <arg name="serial_no"          value="$(arg camera_serial_no)"/>
@@ -43,7 +77,8 @@
   
   <group unless="$(arg calibration_mode)">
     <include file="$(find osx_scene_description)/launch/publish_camera_calibration.launch">
-      <arg name="camera_name"	value="$(arg camera_name)"/>
+      <arg name="parent"	value="$(arg calibration_parent)"/>
+      <arg name="child"		value="$(arg calibration_child)"/>
     </include>
     <!-- <node name="dummy_calibrated_$(arg camera_name)" pkg="tf" type="static_transform_publisher"
           args="0 0 0 0 0 0 $(arg camera_name)_bottom_screw_frame $(arg camera_name)_link 10"/> -->

@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="calibration_mode" default="false"/>
+  <arg name="camera_fps"       default="30"/>
+  <arg name="camera_width"     default="1280"/>
+  <arg name="camera_height"    default="720"/>
+  <arg name="initial_reset"    default="false"/>
+
+  <include file="$(find osx_scene_description)/launch/osx_bringup_single_camera.launch">
+    <arg name="camera_name"        value="d455_0"/>
+    <arg name="calibration_parent" value="base_link"/>
+    <arg name="calibration_child"  value="d455_0_color_optical_frame"/>
+    <arg name="camera_serial_no"   value="141322250927"/>
+    <arg name="calibration_mode"   value="$(arg calibration_mode)"/>
+    <arg name="camera_fps"         value="$(arg camera_fps)"/>
+    <arg name="camera_width"       value="$(arg camera_width)"/>
+    <arg name="camera_height"      value="$(arg camera_height)"/>
+    <arg name="initial_reset"      value="$(arg initial_reset)"/>
+    <!-- AE/AWB OFF。シーンの暖色スポットライト下で IMG_0708.jpg ライクな
+         描画になるよう調整した値（exposure=60 でマグのハイライト彩度維持、
+         gamma=450 で暗部リフトして全体の明度確保、WB=3700K で実光源の色温度
+         に合わせて橙味を抑制、saturation=70 で色をやや濃く）。
+         他のロック値 (brightness=0, contrast=50, hue=0, sharpness=50,
+          gain=64, backlight_compensation=0, power_line_frequency=3) は
+         D455 factory default と一致。 -->
+    <arg name="rgb_lock_settings"  value="true"/>
+    <arg name="rgb_exposure"       value="60"/>
+    <arg name="rgb_white_balance"  value="3700"/>
+    <arg name="rgb_gain"           value="64"/>
+    <arg name="rgb_gamma"          value="450"/>
+    <arg name="rgb_saturation"     value="70"/>
+  </include>
+</launch>

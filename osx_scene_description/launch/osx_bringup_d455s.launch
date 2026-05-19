@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<!--
+  D455 (d455_0..d455_3) を一括起動するエントリポイント。
+  USB 帯域・enumerate 競合を避けるため timed_roslaunch で 5 秒刻みに段階起動。
+
+  各 D455 の serial / RGB ロック値は個別 launch
+  (osx_bringup_d455_<serial>.launch) を真実として参照する。
+  カメラ単位の再チューニングはそちらを編集。
+
+  既定値は 4 台同時運用を見込んだ 640x480 @ 15Hz（USB-3 帯域に余裕を残す）。
+  単機の高解像度運用は個別 launch を直接叩く。
+
+  enable_d455_<N> フラグで台数を切り替え可能。
+  d455_0 (serial 141322250927) は現状未接続のため既定で無効。
+  復帰時は enable_d455_0:=true を渡すか、本ファイルの default を true に戻す。
+-->
+<launch>
+  <arg name="camera_fps"        default="15"/>
+  <arg name="camera_width"      default="640"/>
+  <arg name="camera_height"     default="480"/>
+  <arg name="initial_reset"     default="false"/>
+  <arg name="calibration_mode"  default="false"/>
+
+  <arg name="enable_d455_0"     default="false"/>
+  <arg name="enable_d455_1"     default="true"/>
+  <arg name="enable_d455_2"     default="true"/>
+  <arg name="enable_d455_3"     default="true"/>
+
+  <!-- d455_0 (serial 141322250927) — 即起動 -->
+  <include if="$(arg enable_d455_0)"
+           file="$(find osx_scene_description)/launch/osx_bringup_d455_141322250927.launch">
+    <arg name="camera_fps"       value="$(arg camera_fps)"/>
+    <arg name="camera_width"     value="$(arg camera_width)"/>
+    <arg name="camera_height"    value="$(arg camera_height)"/>
+    <arg name="initial_reset"    value="$(arg initial_reset)"/>
+    <arg name="calibration_mode" value="$(arg calibration_mode)"/>
+  </include>
+
+  <!-- d455_1 (serial 142422250629) — +5s -->
+  <include if="$(arg enable_d455_1)"
+           file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
+    <arg name="time"      value="5"/>
+    <arg name="pkg"       value="osx_scene_description"/>
+    <arg name="file"      value="osx_bringup_d455_142422250629.launch"/>
+    <arg name="node_name" value="d455_1_bringup"/>
+    <arg name="value"     value="camera_fps:=$(arg camera_fps)
+                                  camera_width:=$(arg camera_width)
+                                  camera_height:=$(arg camera_height)
+                                  initial_reset:=$(arg initial_reset)
+                                  calibration_mode:=$(arg calibration_mode)"/>
+  </include>
+
+  <!-- d455_2 (serial 146222253334) — +10s -->
+  <include if="$(arg enable_d455_2)"
+           file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
+    <arg name="time"      value="10"/>
+    <arg name="pkg"       value="osx_scene_description"/>
+    <arg name="file"      value="osx_bringup_d455_146222253334.launch"/>
+    <arg name="node_name" value="d455_2_bringup"/>
+    <arg name="value"     value="camera_fps:=$(arg camera_fps)
+                                  camera_width:=$(arg camera_width)
+                                  camera_height:=$(arg camera_height)
+                                  initial_reset:=$(arg initial_reset)
+                                  calibration_mode:=$(arg calibration_mode)"/>
+  </include>
+
+  <!-- d455_3 (serial 138322252534) — +15s -->
+  <include if="$(arg enable_d455_3)"
+           file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
+    <arg name="time"      value="15"/>
+    <arg name="pkg"       value="osx_scene_description"/>
+    <arg name="file"      value="osx_bringup_d455_138322252534.launch"/>
+    <arg name="node_name" value="d455_3_bringup"/>
+    <arg name="value"     value="camera_fps:=$(arg camera_fps)
+                                  camera_width:=$(arg camera_width)
+                                  camera_height:=$(arg camera_height)
+                                  initial_reset:=$(arg initial_reset)
+                                  calibration_mode:=$(arg calibration_mode)"/>
+  </include>
+</launch>
