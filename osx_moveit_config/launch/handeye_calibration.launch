@@ -41,6 +41,11 @@
     <param name="manipulator/kinematics_solver_timeout" value="0.05"/>
   </group>
 
+  <!-- Clear any stale planning-pipeline params from previous (e.g. dual-arm)
+       sessions on this ROS master. Without this, residual a_bot/b_bot/ab_bot
+       group configs cause move_group to crash on "Group 'a_bot' was not found". -->
+  <rosparam command="delete" param="/move_group/planning_pipelines/ompl"/>
+
   <!-- OMPL planning pipeline (single-arm config; avoids dual-arm groups in default yaml) -->
   <group ns="move_group/planning_pipelines/ompl">
     <param name="planning_plugin" value="ompl_interface/OMPLPlanner"/>
@@ -72,7 +77,7 @@
   <!-- Launch RViz with HandEyeCalibration panel -->
   <include file="$(find osx_moveit_config)/launch/moveit_rviz.launch">
     <arg name="debug"       value="$(arg debug)"/>
-    <arg name="rviz_config" value="$(find osx_moveit_config)/launch/osx_easy_handeye.rviz"/>
+    <arg name="rviz_config" value="$(find osx_moveit_config)/launch/handeye_calibration.rviz"/>
   </include>
 
 </launch>
