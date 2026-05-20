@@ -170,3 +170,11 @@ D455 内部 D4 ASIC の transient 報告で、stream は続行可能。多発す
 | `osx_scene_description/launch/osx_bringup_cameras.launch` | dual-camera 用 helper（D455 直接運用では未使用、互換用） |
 | `osx_scene_description/config/camera_calibration/base_link-to-d455_<N>_color_optical_frame.yaml` × 4 | eye-to-hand キャリブ結果 |
 | `osx_moveit_config/launch/handeye_calibration.launch` | eye-to-hand キャリブ実行 GUI（d455_0..3 シリアル分岐内蔵） |
+
+---
+
+## 追記 (2026-05-19): D455 color 歪み補正ノード
+
+`scripts/rectify_d455_color` を追加（D455 color の Inverse Brown-Conrady 歪みを
+pyrealsense2 で正しく補正し `image_rect` を publish）。背景・使い方の詳細は
+`osx_moveit_config/notes/LOGS/log_handeye_calibration_refactor.md`（2026-05-19 セッション）参照。

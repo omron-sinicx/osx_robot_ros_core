@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Rectify Intel RealSense D455 color image using the correct Inverse Brown-Conrady model.
+
+Why this exists
+---------------
+realsense2_camera publishes /<cam>/color/camera_info with `distortion_model: "plumb_bob"`,
+but the D455 color sensor's internal model is RS2_DISTORTION_INVERSE_BROWN_CONRADY.
+Standard OpenCV-based code (cv::undistort, cv::aruco::estimatePose, image_proc) treats
+the coefficients as Brown-Conrady (plumb_bob) and applies correction in the wrong
+direction, leaving residual edge distortion that breaks hand-eye calibration.
+
+This node bypasses that by using librealsense's native rs2_project_point_to_pixel, which
+implements the correct Inverse Brown-Conrady iteration internally. We build an undistortion
+map once at startup, then apply it via cv2.remap on each incoming frame.
+
+Topics
+------
+Subscribes:
+    ~image_in        (default: image_raw)    sensor_msgs/Image
+    ~camera_info_in  (default: camera_info)  sensor_msgs/CameraInfo  -- one-shot
+
+Publishes:
+    ~image_rect       sensor_msgs/Image       -- distortion-corrected color
+    ~camera_info_rect sensor_msgs/CameraInfo  -- same K, D = [0, 0, 0, 0, 0]
+
+Usage (eye-to-hand calibration for d455_1)
+------------------------------------------
+    rosrun osx_scene_description rectify_d455_color \\
+        image_in:=/d455_1/color/image_raw \\
+        camera_info_in:=/d455_1/color/camera_info \\
+        image_rect:=/d455_1/color/image_rect \\
+        camera_info_rect:=/d455_1/color/camera_info_rect
+
+Then point the HandEyeCalibration display at the *_rect topics.
+"""
+import numpy as np
+import cv2
+import rospy
+import pyrealsense2 as rs
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, CameraInfo
+
+
+def _make_rs_intrinsics(width, height, fx, fy, cx, cy, model, coeffs):
+    intr = rs.intrinsics()
+    intr.width = width
+    intr.height = height
+    intr.fx = fx
+    intr.fy = fy
+    intr.ppx = cx
+    intr.ppy = cy
+    intr.model = model
+    intr.coeffs = list(coeffs) + [0.0] * (5 - len(coeffs))
+    return intr
+
+
+def _build_undistortion_maps(intr_real):
+    """Build cv2.remap-compatible (map_x, map_y) so that
+
+        rectified[v', u'] = sample(distorted, (map_x[v', u'], map_y[v', u']))
+
+    where (u', v') addresses a pixel in the rectified (ideal pinhole) image
+    that shares the same K as the distorted one but has D = 0.
+
+    For each output pixel we back-project through an ideal pinhole to a 3D ray
+    at unit depth, then forward-project through the real Inverse Brown-Conrady
+    intrinsics. The latter projection iterates internally to invert the
+    closed-form distortion model.
+    """
+    intr_ideal = _make_rs_intrinsics(
+        intr_real.width, intr_real.height,
+        intr_real.fx, intr_real.fy,
+        intr_real.ppx, intr_real.ppy,
+        rs.distortion.none,
+        [0.0] * 5,
+    )
+    w, h = intr_real.width, intr_real.height
+    map_x = np.empty((h, w), dtype=np.float32)
+    map_y = np.empty((h, w), dtype=np.float32)
+    for v in range(h):
+        for u in range(w):
+            pt = rs.rs2_deproject_pixel_to_point(intr_ideal, [float(u), float(v)], 1.0)
+            src = rs.rs2_project_point_to_pixel(intr_real, pt)
+            map_x[v, u] = src[0]
+            map_y[v, u] = src[1]
+    return map_x, map_y
+
+
+class D455ColorRectifier:
+    def __init__(self):
+        self.bridge = CvBridge()
+        self.map_x = None
+        self.map_y = None
+        self.info_rect_template = None
+
+        self.image_pub = rospy.Publisher("image_rect", Image, queue_size=2)
+        self.info_pub = rospy.Publisher("camera_info_rect", CameraInfo, queue_size=2)
+
+        info_topic = rospy.resolve_name("camera_info_in")
+        rospy.loginfo("[rectify_d455_color] waiting for %s ...", info_topic)
+        first_info = rospy.wait_for_message(info_topic, CameraInfo)
+        rospy.loginfo("[rectify_d455_color] got intrinsics: %dx%d", first_info.width, first_info.height)
+        self._setup(first_info)
+        rospy.loginfo("[rectify_d455_color] undistortion map built; subscribing to image_in")
+
+        rospy.Subscriber("image_in", Image, self._image_cb, queue_size=2)
+
+    def _setup(self, info_msg):
+        intr = _make_rs_intrinsics(
+            info_msg.width, info_msg.height,
+            info_msg.K[0], info_msg.K[4],
+            info_msg.K[2], info_msg.K[5],
+            rs.distortion.inverse_brown_conrady,
+            info_msg.D,
+        )
+        self.map_x, self.map_y = _build_undistortion_maps(intr)
+
+        rect_info = CameraInfo()
+        rect_info.header.frame_id = info_msg.header.frame_id
+        rect_info.height = info_msg.height
+        rect_info.width = info_msg.width
+        rect_info.distortion_model = "plumb_bob"
+        rect_info.D = [0.0, 0.0, 0.0, 0.0, 0.0]
+        rect_info.K = info_msg.K
+        rect_info.R = info_msg.R
+        # Monocular rectified: P = [K | 0] so downstream sees the same intrinsics.
+        rect_info.P = [
+            info_msg.K[0], 0.0,           info_msg.K[2], 0.0,
+            0.0,           info_msg.K[4], info_msg.K[5], 0.0,
+            0.0,           0.0,           1.0,           0.0,
+        ]
+        rect_info.binning_x = info_msg.binning_x
+        rect_info.binning_y = info_msg.binning_y
+        rect_info.roi = info_msg.roi
+        self.info_rect_template = rect_info
+
+    def _image_cb(self, msg):
+        if self.map_x is None:
+            return
+        try:
+            img = self.bridge.imgmsg_to_cv2(msg, desired_encoding=msg.encoding)
+        except Exception as e:  # noqa: BLE001 -- log and skip
+            rospy.logwarn_throttle(2.0, "[rectify_d455_color] cv_bridge: %s", str(e))
+            return
+        rect = cv2.remap(img, self.map_x, self.map_y, cv2.INTER_LINEAR)
+        out_img = self.bridge.cv2_to_imgmsg(rect, encoding=msg.encoding)
+        out_img.header = msg.header
+        self.image_pub.publish(out_img)
+        info_out = self.info_rect_template
+        info_out.header = msg.header
+        self.info_pub.publish(info_out)
+
+
+def main():
+    rospy.init_node("d455_color_rectifier")
+    D455ColorRectifier()
+    rospy.spin()
+
+
+if __name__ == "__main__":
+    main()

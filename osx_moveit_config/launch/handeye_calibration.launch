@@ -14,20 +14,24 @@
     roslaunch osx_scene_description osx_bringup_d455s.launch
     # or single camera: roslaunch osx_scene_description osx_bringup_d455_<serial>.launch
 
-    # 3) Calibration GUI
-    roslaunch osx_moveit_config handeye_calibration.launch camera_name:=d455_1
+    # 3) Calibration GUI (camera is selected in the RViz panel, not here)
+    roslaunch osx_moveit_config handeye_calibration.launch
 
-  RViz HandEyeCalibration panel — Context tab settings:
+  The camera to calibrate is chosen entirely in the RViz HandEyeCalibration
+  panel's Context tab (sensor frame + image/camera_info topics). This launch
+  only starts MoveIt + RViz and is camera-agnostic.
+
+  RViz HandEyeCalibration panel — Context tab settings (example for d455_1):
     Sensor configuration: Eye-to-hand
-    Sensor frame:         <camera_name>_color_optical_frame  (e.g., d455_1_color_optical_frame)
+    Sensor frame:         d455_1_color_optical_frame
     Object frame:         handeye_target  (appears after target detection)
-    End-effector frame:   tool0
+    End-effector frame:   gripper_tip_link
     Robot base frame:     base_link
     Planning group:       manipulator
+    image_topic:          /d455_1/color/image_rect       (rectified, see rectify_d455_color)
+    camera_info_topic:    /d455_1/color/camera_info_rect
 -->
 <launch>
-  <arg name="camera_name" default="d455_1"
-       doc="Camera namespace to use (must already be running, e.g., d435i / d435 / d455_0..3)."/>
   <arg name="debug" default="false"/>
 
   <!-- Override SRDF for single robot (not dual-arm) -->

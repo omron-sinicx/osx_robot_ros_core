@@ -114,3 +114,74 @@ GUI 上で:
 - マザボ: MSI PRO B650-S WIFI (MS-7E26)
 - CPU: AMD Ryzen 9 9950X3D
 - Kernel: Linux 6.17.0-23-generic
+
+---
+
+# 2026-05-19 セッション: 3 台キャリブ実施・D455 歪み補正・各種知見
+
+## 実施結果: d455_1 / d455_2 / d455_3 を eye-to-hand キャリブし保存
+
+3 台とも reprojection error 並進 ~8.5mm / 回転 ~0.8° で完了。結果を
+`osx_scene_description/config/camera_calibration/base_link-to-d455_<N>_color_optical_frame.yaml`
+に保存（identity placeholder を上書き）。カメラ再起動後、`publish_handeye_calibration.py`
+が各 YAML を読み `base_link -> d455_<N>_color_optical_frame` の static TF として publish、
+3 台とも保存値と一致を確認済み。
+
+| カメラ | 並進 RMS | 回転 RMS | translation (x,y,z) |
+|---|---|---|---|
+| d455_1 | 8.0 mm | 0.87° | (-0.4143, 0.6634, 0.5367) |
+| d455_2 | 8.7 mm | 0.78° | ( 0.3696, 0.9835, 0.3863) |
+| d455_3 | 8.5 mm | 0.76° | ( 0.4745, 0.4399, 0.3136) |
+
+運用知見:
+- カメラを切り替えるたびに Calibrate タブの **Clear samples** が必須（前カメラのサンプル混入で AX=XB が発散）。Clear はソース上も全バッファ(effector_wrt_world_/object_wrt_sensor_/joint_states_/tree_view_model_)を消去するため確実。
+- 当初 d455_2 が 14.2mm と高かったが、**回転多様性(roll/pitch/yaw を各 ±30°以上)を意識して再サンプル**したら 8.7mm に改善。サンプル数より姿勢多様性が効く。
+- HandEye plugin の solve 結果は rviz 稼働中のみ `/tf` に動的 publish される。**rviz を閉じると static publisher の旧値に戻る**ため、必ず solve 後に YAML へ保存すること。
+
+## reprojection error の単位ラベルが GUI で逆転している（バグ）
+
+`handeye_control_widget.cpp:412` が `getReprojectionError` の戻り値
+（`handeye_solver_base.h:141` は `(rotation[rad], translation[m])` 順）に対して
+`first` に "m"、`second` に "rad" を付けており、ラベルが逆。
+表示 `X m, Y rad` の実体は X=回転[rad]、Y=並進[m]。
+
+GitHub issues に該当報告は見つからず（#139 等は別件）。詳細・修正案は
+プロジェクトルートの `moveit_calibration_reprojection_error_label_bug.md` に記録。
+
+## ChArUco "longest board side (m)" の定義
+
+`handeye_target_charuco.cpp:191` の `square_size = board_size_meters / max(squares_x, squares_y)`
+より、**マージン（白縁）を含まないチェッカーマトリクス本体の最長辺寸法**。
+margin は印刷画像生成 (`createTargetImage`) でのみ使われ、姿勢推定には不使用。
+
+## D455 color 歪み補正ノードを追加
+
+D455 color sensor は `RS2_DISTORTION_INVERSE_BROWN_CONRADY` だが realsense2_camera は
+camera_info を `plumb_bob` ラベルで素通し publish するため、OpenCV/cv::aruco 系が
+逆方向に歪み補正し、画角端でマーカー検出が歪む。対策として
+`osx_scene_description/scripts/rectify_d455_color`（pyrealsense2 の
+rs2_deproject/project を使い正しい Inverse Brown-Conrady で undistortion map を構築 →
+cv2.remap）を新規作成。`image_rect` + D=0 の `camera_info_rect` を publish し、
+HandEye の image/camera_info topic をこれに向ける。pyrealsense2 は pip で導入。
+
+## D455 60fps と手動露出のトレードオフ
+
+`camera_fps:=60` でも color は 30fps 止まり。原因は **手動露出
+(`enable_auto_exposure=false`)** で、Intel 公式も「auto-exposure を切ると fps が無効化」
+と記載。`enable_auto_exposure=true` にすると 60fps 復帰（実機確認済み）。depth は影響なく
+60fps 出る。色味ロック(複数カメラの色一致)と 60fps は D455 では両立不可。
+
+なお `osx_bringup_d455s.launch` には `rgb_lock_settings` 引数が無く、個別 launch が
+`value="true"` ハードコードのため、**CLI から `rgb_lock_settings:=false` は効かない**
+（色味ロック=30fps 固定）。60fps 化には個別 launch 編集が必要。
+
+## handeye_calibration.launch から dead な camera_name 引数を削除
+
+リファクタでカメラ起動を分離した結果 `camera_name` は launch 内で未参照になっていた
+（カメラ選択は rviz Context タブで行う）。混乱の元になるため削除。起動は
+`roslaunch osx_moveit_config handeye_calibration.launch`（引数なし）でよい。
+
+## 環境（2026-05-19）
+
+- librealsense 2.54.2 / pyrealsense2 2.57.7（pip）/ D455 FW 5.17.0.10
+- MSI PRO B650-S WIFI (MS-7E26) / AMD Ryzen 9 9950X3D / Linux 6.17.0-23-generic
