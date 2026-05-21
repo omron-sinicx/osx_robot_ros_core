@@ -1,0 +1,68 @@
+defaults:
+  - controller: ur5e
+  - _self_
+
+
+# ================== Dataset Configuration ==================
+dataset:
+  repo_id: [test_task] # name of the dataset
+  task: "Test task" # task description
+  root: /root/osx-ur/
+  dir: "${.root}/data"
+  overwrite: false # overwrite the dataset if it already exists
+  fps: 50
+  num_episodes: 100
+  episode_time_s: 60.0
+  reset_time_s: 30.0
+  robot_type: ur5e
+  episode_idx: 0
+  seed: 2
+
+  # ================== Camera Configuration ==================
+  cameras:
+    front_camera:
+      height: 480
+      width: 640
+      channels: 3
+    wrist_camera:
+      height: 480
+      width: 640
+      channels: 3
+
+  # ================== Observation (state) features ==================
+  # key: feature name used in the dataset
+  # value: list of ints representing the shape
+  states:
+    observation.qpos: [6]
+    observation.qvel: [6]
+    observation.eef.position: [3]
+    observation.eef.linear_velocity: [3]
+    observation.eef.angular_velocity: [3]
+    observation.eef.rotation_ortho6: [6]
+    observation.eef.rotation_axis_angle: [3]
+    observation.ft: [6]
+
+  # ================== Action features ==================
+  actions:
+    action.joint: [6]
+    action.position: [3]
+    action.rotation_ortho6: [6]
+    action.rotation_axis_angle: [3]
+    action.stiffness_diag: [6]
+    action.delta_position: [3]
+    action.delta_rotation: [3]
+
+  # ================== Replay Configuration ==================
+  replay: raw_actions
+  render: true
+
+  # ================== Action Configuration ==================
+  raw_actions:
+    action.position: [3]
+    action.rotation_ortho6: [6]
+    action.stiffness_diag: [6]
+
+  # ================== Image Writer ==================
+  image_writer:
+    num_processes: 0
+    threads_per_camera: 4

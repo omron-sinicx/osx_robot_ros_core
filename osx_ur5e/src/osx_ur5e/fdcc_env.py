@@ -3,14 +3,9 @@ import rospy
 import numpy as np
 from omegaconf import DictConfig
 
-from osx_robot_control import math_utils
-from osx_ur5e.base_env import ORIENTATION_REPRESENTATIONS, BaseEnv
+from osx_ur5e.base_env import BaseEnv
 from osx_ur5e.timestep import TimeStep, STEP_MID, STEP_LAST
 from ur_control import transformations
-
-
-STIFFNESS_REPRESENTATIONS = ['cholesky', 'diag']
-
 
 class FDCCEnv(BaseEnv):
     """
@@ -27,20 +22,19 @@ class FDCCEnv(BaseEnv):
     def load_params(self, config):
         super().load_params(config)
 
-        # Parameters
         self.control_frequency = config.dataset.fps
         self.dt = 1. / self.control_frequency
 
-        self.cam_names = config.cameras.keys()
+        self.cam_names = config.dataset.cameras.keys()
         rospy.loginfo(f"Cameras to record from: {self.cam_names}")
-        self.max_force_torque = config.safety_parameters.max_force_torque
-        self.translation_stiffness_limits = config.safety_parameters.stiffness_limits.translation
-        self.rotation_stiffness_limits = config.safety_parameters.stiffness_limits.rotation
-        self.max_delta_translation = config.safety_parameters.max_delta_translation
-        self.max_delta_rotation = np.deg2rad(config.safety_parameters.max_delta_rotation)
-        self.controller_config = config.controller
-        self.initial_config = config.init_qpos
 
+        safety = config.controller.safety_parameters
+        self.max_force_torque = safety.max_force_torque
+        self.translation_stiffness_limits = safety.stiffness_limits.translation
+        self.rotation_stiffness_limits = safety.stiffness_limits.rotation
+        self.max_delta_translation = safety.max_delta_translation
+        self.max_delta_rotation = np.deg2rad(safety.max_delta_rotation)
+        self.controller_config = config.controller
         self.actions_as_deltas = config.controller.actions_as_deltas
 
     def set_controller_parameters(self):
@@ -123,9 +117,6 @@ class FDCCEnv(BaseEnv):
         stiff_trans = action['action.stiffness_diag'][:3]
         stiff_rot = action['action.stiffness_diag'][3:]
 
-        # stiff_trans = np.clip(stiff_trans, self.translation_stiffness_limits[0], self.translation_stiffness_limits[1])
-        # stiff_rot = np.clip(stiff_rot, self.rotation_stiffness_limits[0], self.rotation_stiffness_limits[1])
-        print(f"Stiffness: {stiff_trans}, {stiff_rot}")
         stiff_act = np.concatenate([stiff_trans, stiff_rot]).astype(np.int64)
 
         # Cap the bandwidth to change the controller's parameters to 40hz and only if the change is significant

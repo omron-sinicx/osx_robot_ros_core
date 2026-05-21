@@ -7,9 +7,6 @@ Usage:
     # Override eval settings:
     python evaluate_policy.py eval.num_rollouts=5 eval.max_timesteps=500
 
-    # Point to a different env config (required for first run):
-    python evaluate_policy.py +eval.env_config=/path/to/data_collection.yaml
-
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
 """
@@ -233,25 +230,12 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Control frequency: {control_frequency} Hz")
 
     # ------------------------------------------------------------------
-    # Load env config and build FDCCEnv
+    # Build FDCCEnv from Hydra config (dataset + controller groups)
     # ------------------------------------------------------------------
-    # env_config can be overridden via: +eval.env_config=/path/to/yaml
-    env_config_path = OmegaConf.select(cfg, "eval.env_config", default=None)
-    if env_config_path is None:
-        env_config_path = Path(__file__).parent.parent / "config" / "data_collection.yaml"
-        logger.info(f"eval.env_config not set, falling back to: {env_config_path}")
-    else:
-        env_config_path = Path(env_config_path)
-
-    logger.info(f"Loading env config from: {env_config_path}")
-    raw_env_cfg = OmegaConf.load(env_config_path)
-    # Support both bare env config and configs that nest it under an 'env' key
-    env_cfg = raw_env_cfg.get("env", raw_env_cfg) if hasattr(raw_env_cfg, "get") else raw_env_cfg
-
     rospy.init_node("evaluate_policy", anonymous=False)
     logger.info("ROS node initialized")
 
-    env = FDCCEnv(config=env_cfg, use_torch_for_cameras=False)
+    env = FDCCEnv(config=cfg, use_torch_for_cameras=False)
 
     # FDCCEnv.reset() asserts reference_trajectory is not None even though
     # it is unused during the actual reset movement — satisfy the check.

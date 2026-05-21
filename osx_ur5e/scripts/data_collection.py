@@ -179,7 +179,7 @@ def record_episode(
     cfg: DictConfig,
     events: dict,
 ) -> None:
-    ds_cfg = cfg.dataset.dataset
+    ds_cfg = cfg.dataset
     safety_cfg = cfg.controller.safety_parameters
     dt = 1.0 / ds_cfg.fps
     total_steps = math.ceil(ds_cfg.episode_time_s * ds_cfg.fps)
@@ -267,8 +267,8 @@ def wait_for_keypress_reset(events: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-@hydra.main(config_path="/root/osx-ur/dependencies/comet/configs",
-            config_name="blackboard_wipe",
+@hydra.main(config_path="../../config/hydra",
+            config_name="test_task",
             version_base=None)
 def main(cfg: DictConfig) -> None:
 
@@ -276,8 +276,8 @@ def main(cfg: DictConfig) -> None:
     controller_cfg = cfg.controller
     features = build_features(ds_cfg)
     num_camera_threads = ds_cfg.image_writer.threads_per_camera * len(ds_cfg.cameras)
-    repo_id = ds_cfg.dataset.repo_id[0]
-    dataset_dir = Path(ds_cfg.dataset.dir) / repo_id
+    repo_id = ds_cfg.repo_id[0]
+    dataset_dir = Path(ds_cfg.dir) / repo_id
 
     rospy.init_node("data_collection")
 
@@ -306,7 +306,7 @@ def main(cfg: DictConfig) -> None:
         else None
     )
 
-    if ds_cfg.dataset.overwrite or not dataset_dir.exists():
+    if ds_cfg.overwrite or not dataset_dir.exists():
         if dataset_dir.exists() and dataset_dir.is_dir():
             confirm = input(f"Dataset directory {dataset_dir} already exists. Overwrite? (y/n): ")
             if confirm.strip().lower() != "y":
@@ -317,10 +317,10 @@ def main(cfg: DictConfig) -> None:
         log.info("Creating dataset: %s", repo_id)
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
-            fps=ds_cfg.dataset.fps,
+            fps=ds_cfg.fps,
             features=features,
             root=dataset_dir,
-            robot_type=ds_cfg.dataset.robot_type,
+            robot_type=ds_cfg.robot_type,
             use_videos=bool(ds_cfg.cameras),
             image_writer_processes=ds_cfg.image_writer.num_processes,
             image_writer_threads=num_camera_threads,
@@ -345,11 +345,11 @@ def main(cfg: DictConfig) -> None:
     wait_for_keypress_reset(events)
     try:
         recorded = 0
-        while recorded < ds_cfg.dataset.num_episodes and not events["stop"] and not rospy.is_shutdown():
+        while recorded < ds_cfg.num_episodes and not events["stop"] and not rospy.is_shutdown():
             log.info(
                 "Episode %d/%d  [Enter=end episode, r=redo, q=quit]",
                 recorded + 1,
-                ds_cfg.dataset.num_episodes,
+                ds_cfg.num_episodes,
             )
             record_episode(arm, gello, image_recorder, dataset, cfg, events)
 
@@ -369,7 +369,7 @@ def main(cfg: DictConfig) -> None:
             recorded += 1
             log.info("Saved episode %d (%d total in dataset)", recorded, dataset.num_episodes)
 
-            if recorded < ds_cfg.dataset.num_episodes and not events["stop"]:
+            if recorded < ds_cfg.num_episodes and not events["stop"]:
                 wait_for_keypress_reset(events)
     finally:
         log.info("Finalizing dataset...")

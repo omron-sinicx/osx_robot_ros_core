@@ -14,10 +14,7 @@ Usage:
     python test_replay_episode.py
 
     # Start from episode 2, compare 3 episodes:
-    python test_replay_episode.py dataset.dataset.episode_idx=2 +eval.num_episodes=3
-
-    # Point to a different env config:
-    python test_replay_episode.py +eval.env_config=/path/to/data_collection.yaml
+    python test_replay_episode.py dataset.episode_idx=2 +eval.num_episodes=3
 """
 
 import logging
@@ -269,23 +266,12 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Replay action keys: {replay_action_keys}")
 
     # ------------------------------------------------------------------
-    # Load env config and build FDCCEnv
+    # Build FDCCEnv from Hydra config (dataset + controller groups)
     # ------------------------------------------------------------------
-    env_config_path = OmegaConf.select(cfg, "eval.env_config", default=None)
-    if env_config_path is None:
-        env_config_path = Path(__file__).parent.parent / "config" / "data_collection.yaml"
-        logger.info(f"eval.env_config not set, falling back to: {env_config_path}")
-    else:
-        env_config_path = Path(env_config_path)
-
-    logger.info(f"Loading env config from: {env_config_path}")
-    raw_env_cfg = OmegaConf.load(env_config_path)
-    env_cfg = raw_env_cfg.get("env", raw_env_cfg) if hasattr(raw_env_cfg, "get") else raw_env_cfg
-
     rospy.init_node("test_replay_episode", anonymous=False)
     logger.info("ROS node initialized")
 
-    env = FDCCEnv(config=env_cfg, use_torch_for_cameras=False)
+    env = FDCCEnv(config=cfg, use_torch_for_cameras=False)
     env.reference_trajectory = []  # satisfy reset() assertion
 
     actions_as_deltas = env.actions_as_deltas

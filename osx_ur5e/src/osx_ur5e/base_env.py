@@ -1,4 +1,5 @@
 import collections
+
 import rospy
 import numpy as np
 from omegaconf import DictConfig
@@ -49,7 +50,7 @@ class BaseEnv:
 
     def load_params(self, config):
         self.config = config
-        self.initial_config = config.init_qpos
+        self.initial_config = config.controller.init_qpos
 
     def go_home(self):
         assert self.arm.dashboard_services.activate_ros_control_on_ur(), "Failed to activate ROS control on UR"
@@ -103,10 +104,10 @@ class BaseEnv:
         if move_robot:
             # Move away from contact
             success = self.arm.move_relative(target_time=1.0, transformation=[0, 0, -0.05, 0, 0, 0], relative_to_tcp=True, wait=True)
-            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.config.init_qpos} {success}"
+            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.initial_config} {success}"
             # Move to the initial configuration
             success = self.arm.set_joint_positions(target_time=self.config.controller.reset_time, positions=self.initial_config, wait=True)
-            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.config.init_qpos} {success}"
+            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.initial_config} {success}"
 
         return TimeStep(
             step_type=STEP_FIRST,
