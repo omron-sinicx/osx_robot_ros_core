@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
-"""Evaluate a COMET diffusion policy on the real UR5e with PI force tracking.
+"""Evaluate a COMET diffusion policy with Z-axis force PID override.
 
-The diffusion policy handles trajectory generation (pose head) while force
-tracking is handled by an analytical compliance mapper + PI controller. The
-compliance diffusion head outputs (``action.normal_force``,
-``action.normal_torque``, ``action.estimated_stiffness``) are replaced at
-inference time with values computed from the target force, the current EEF
-position, and the measured wrench.
+Unlike ``evaluate_policy_pid.py`` which overrides the factored compliance
+outputs (normal_force, normal_torque, stiffness) along the learned contact
+direction, this script:
 
-This is the real-robot analogue of
-``dependencies/comet/comet/scripts/eval/robosuite/evaluate_robosuite_pid.py``.
+1. Lets the policy predict the full factored action (pose + compliance).
+2. Converts it to a virtual-target + directional-stiffness command via
+   ``process_factored_action_dict`` (preserving the policy's XY motion
+   intent, contact direction, and stiffness structure).
+3. Applies a closed-loop PI controller **only** on the surface-normal axis
+   (default: world Z) of the virtual-target position, so that the
+   downward contact force tracks a desired setpoint while the tangential
+   (XY) sliding motion remains fully policy-controlled.
+
+This decouples "how hard to push" from "where to slide", which the original
+all-direction override conflated through the contact_direction vector.
 
 Usage:
-    python evaluate_policy_pid.py
+    python evaluate_policy_pid_test.py
 
-    # Override eval settings:
-    python evaluate_policy_pid.py eval.num_rollouts=5 eval.max_timesteps=500
-
-    # Set the PI target force (N):
-    python evaluate_policy_pid.py eval.pid_target_force=40.0
+    # Override target Z-force:
+    python evaluate_policy_pid_test.py eval.pid.target_force=20.0
 
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
 """
-
-# Portions adapted from evaluate_robosuite_pid.py (MIT License, OMRON SINIC X).
 
 import logging
 import datetime
@@ -40,7 +41,6 @@ import torch
 from torchvision import transforms
 
 import hydra
-from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 import rospy
@@ -61,6 +61,7 @@ from ur_control import transformations
 from comet.common.utils.utils import load_base_policy
 from comet.common.utils.ft_visualizer import FTVisualizer
 from comet.common.utils.viz_utils import save_to_video
+from comet.common.utils.vt_utils import process_factored_action_dict
 from comet.common.policies.types import FeatureType
 
 from osx_ur5e.fdcc_env import FDCCEnv
@@ -98,69 +99,8 @@ def setup_logging(log_file: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Analytical force mapper + PI controller
+# Z-axis force PI controller
 # ---------------------------------------------------------------------------
-
-@dataclass
-class ForceMapperConfig:
-    """All tunables for the analytical force path."""
-    target_force: float = 30.0
-    target_torque: float = 0.0
-
-    # Stiffness schedule: maps |F_target| -> K
-    k_max: float = 1000.0
-    k_min: float = 500.0
-    f_low: float = 1.0
-    f_high: float = 10.0
-    max_displacement: float = 0.015
-
-    # Non-contact / default stiffness for orthogonal directions
-    # default_stiffness: float = 2400.0
-    # default_stiffness_rot: float = 2400.0
-    default_stiffness: float = 1000.0
-    default_stiffness_rot: float = 1000.0
-
-    characteristic_length: float = 0.1
-    use_isotropic_stiffness: bool = False
-
-    # PI controller gains
-    kp_force: float = 0.2
-    ki_force: float = 0.03
-    max_integral: float = 70.0  # prevents integral windup
-
-    # Contact detection threshold (N) — below this, PI correction is skipped
-    contact_threshold: float = 3.5
-
-    # Smoothing on the measured force to reject sensor noise
-    force_ema_alpha: float = 0.3
-
-    # ---- Stability safeguards (real-robot specific) ----
-    # When True, feedback uses projected force |f · d̂| instead of ‖f‖.
-    # Projected force is the physically meaningful "normal" force and is
-    # much less noisy / less coupled to tangential motion on hardware.
-    use_projected_force_feedback: bool = True
-
-    # Clamp for the parasitic-spring offset (m). Prevents feedforward
-    # from exploding when the policy's nominal position runs far ahead
-    # of the actual EEF (e.g. in free space before contact).
-    max_tracking_offset: float = 0.01
-
-    # Only apply parasitic-spring feedforward once the EEF is close enough
-    # to actually be in contact. Before that, F_cmd falls back to
-    # `pre_contact_force_cmd` (usually a small constant push).
-    feedforward_requires_contact: bool = True
-    pre_contact_force_cmd: float = 0.0
-
-    # Final clamp on the commanded force (N). Keeps the command in a
-    # physically reasonable band around the target, even if feedforward
-    # or integral windup misbehaves. Applied as target * [lo, hi] bounds
-    # so it scales with the target.
-    f_cmd_rel_min: float = 0.0    # never command negative push
-    f_cmd_rel_max: float = 2.0    # at most 2x target
-
-    # Structured debug logging every N calls (set 0 to disable)
-    debug_log_every: int = 10
-
 
 class ForceTrackingPI:
     """Simple PI controller on force error."""
@@ -182,15 +122,46 @@ class ForceTrackingPI:
         return self.kp * error + self.ki * self._integral
 
 
-class AnalyticalForceMapper:
-    """Replaces the compliance diffusion head at inference time.
+@dataclass
+class ZForceConfig:
+    """Tunables for the surface-normal (Z-axis) force controller."""
+    target_force: float = 15.0
 
-    Given a target force and the current robot state, computes
-    normal_force, normal_torque, and estimated_stiffness analytically,
-    with optional closed-loop PI correction from the measured wrench.
+    # Which world-frame axis is the surface normal, and the push direction.
+    # axis=2 + sign=-1 means push in -Z (downward onto a horizontal table).
+    surface_axis: int = 2
+    surface_push_sign: float = -1.0
+
+    # PI gains
+    kp_force: float = 0.5
+    ki_force: float = 0.03
+    max_integral: float = 70.0
+
+    # Contact detection
+    contact_threshold: float = 3.5
+    force_ema_alpha: float = 0.3
+
+    # Safety clamps
+    max_force_correction: float = 50.0   # N — caps the PI output
+    max_vt_offset: float = 0.05          # m — max virtual-target offset from actual
+
+    # When True, PID only kicks in after contact is detected; before that
+    # the policy's full virtual target is passed through unchanged.
+    override_only_in_contact: bool = True
+
+    debug_log_every: int = 10
+
+
+class ZAxisForceController:
+    """Closed-loop force controller acting on a single world-frame axis.
+
+    Operates on the *controller-ready* action dict (virtual-target position +
+    orientation + stiffness diagonal) that ``process_factored_action_dict``
+    already produced. Only the surface-axis component of the virtual-target
+    position is modified; everything else is left as the policy predicted.
     """
 
-    def __init__(self, cfg: ForceMapperConfig):
+    def __init__(self, cfg: ZForceConfig):
         self.cfg = cfg
         self.pi = ForceTrackingPI(cfg.kp_force, cfg.ki_force, cfg.max_integral)
         self._force_ema: Optional[float] = None
@@ -201,225 +172,130 @@ class AnalyticalForceMapper:
         self._force_ema = None
         self._call_count = 0
 
-    def stiffness_schedule(self, f_target_abs: float) -> float:
-        """Map target force magnitude to stiffness."""
-        c = self.cfg
-        if f_target_abs < c.f_low:
-            K = c.k_max
-        elif f_target_abs > c.f_high:
-            K = c.k_min
-        else:
-            K = c.k_max - (c.k_max - c.k_min) * (f_target_abs - c.f_low) / (c.f_high - c.f_low)
-
-        if c.max_displacement > 0 and f_target_abs > c.f_low:
-            k_floor = f_target_abs / c.max_displacement
-            K = max(K, k_floor)
-
-        return float(np.clip(K, c.k_min, c.k_max))
-
-    def smooth_force(self, raw_force_norm: float) -> float:
-        """EMA filter on measured force magnitude."""
+    def smooth_force(self, raw: float) -> float:
         if self._force_ema is None:
-            self._force_ema = raw_force_norm
+            self._force_ema = raw
         else:
             a = self.cfg.force_ema_alpha
-            self._force_ema = a * raw_force_norm + (1.0 - a) * self._force_ema
+            self._force_ema = a * raw + (1.0 - a) * self._force_ema
         return self._force_ema
 
-    def compute(
+    def override_controller_action(
         self,
-        contact_direction: np.ndarray,
-        x_nominal: np.ndarray,
-        x_actual: np.ndarray,
-        wrench: np.ndarray,
-        dt: float,
-    ) -> tuple[float, float, float, dict]:
-        """Compute compliance parameters for the target force.
-
-        Returns:
-            (normal_force_cmd, normal_torque_cmd, stiffness, diagnostics)
-        """
-        c = self.cfg
-        eps = 1e-8
-
-        d_norm = np.linalg.norm(contact_direction)
-        d = contact_direction / (d_norm + eps) if d_norm > eps else np.array([0., 0., -1.])
-
-        K = self.stiffness_schedule(abs(c.target_force))
-
-        # --- Force feedback ---------------------------------------------------
-        # Projected force |f · d̂| is the normal-direction contact force and is
-        # much less noisy than ‖f‖ on hardware (rejects tangential/shear).
-        f_vec = np.asarray(wrench, dtype=np.float64).reshape(-1)[:3]
-        print(f"f_vec shape: {f_vec.shape}")
-        print(f"f_vec: {f_vec}")
-
-        f_norm_full = float(np.linalg.norm(f_vec))
-        print(f"f_norm_full: {f_norm_full}")
-        f_projected = float(abs(np.dot(f_vec, d)))
-        print(f"f_projected: {f_projected}")
-        f_meas_raw = f_projected if c.use_projected_force_feedback else f_norm_full
-        F_measured = self.smooth_force(f_meas_raw)
-        print(f"F_measured: {F_measured}")
-        in_contact = F_measured > c.contact_threshold
-
-        # --- Feedforward: compensate parasitic spring force ------------------
-        # FDCC sees: F_achieved = F_cmd + K * dot(x_nominal - x_actual, d)
-        # ⇒ F_cmd = F_target - K * tracking_offset
-        tracking_offset_raw = float(np.dot(x_nominal - x_actual, d))
-        tracking_offset = float(
-            np.clip(tracking_offset_raw, -c.max_tracking_offset, c.max_tracking_offset)
-        )
-        print(f"tracking_offset_raw: {tracking_offset_raw}")
-        print(f"tracking_offset: {tracking_offset}")
-
-        # The parasitic force exist because the policy nominal position is not the same
-        # as the actual position, so we need to compensate for that.
-        # F_parasitic = (K / 2) * tracking_offset
-        F_parasitic = K * tracking_offset
-        print(f"F_parasitic: {F_parasitic}")
-
-        if c.feedforward_requires_contact and not in_contact:
-            # Before contact, don't let a large position mismatch drive F_cmd
-            # wildly negative / positive. Use a fixed small pre-contact push.
-            F_cmd = float(c.pre_contact_force_cmd)
-            F_correction = 0.0
-            force_error = 0.0
-            ff_enabled = False
-        else:
-            # F_cmd = (c.target_force - F_parasitic) / 2.0  # THIS fixed the bug, i want my money back
-            F_cmd = c.target_force - F_parasitic
-            print(f"F_cmd: {F_cmd}")
-            ff_enabled = True
-            # --- Feedback: PI correction -------------------------------------
-            if in_contact:
-                force_error = c.target_force - F_measured
-                F_correction = self.pi.update(force_error, dt)
-                F_cmd += F_correction
-            else:
-                force_error = 0.0
-                F_correction = 0.0
-
-        # --- Final safety clamp ---------------------------------------------
-        F_cmd_unclamped = F_cmd
-        print(f"F_cmd_unclamped: {F_cmd_unclamped}")
-        lo = c.f_cmd_rel_min * c.target_force
-        hi = c.f_cmd_rel_max * c.target_force
-        if lo > hi:
-            lo, hi = hi, lo
-        F_cmd = float(np.clip(F_cmd, lo, hi))
-        print(f"F_cmd: {F_cmd}")
-
-        diag = {
-            "K": K,
-            "d": d,
-            "d_norm_raw": d_norm,
-            "x_nominal": x_nominal,
-            "x_actual": x_actual,
-            "tracking_offset_raw": tracking_offset_raw,
-            "tracking_offset": tracking_offset,
-            "F_parasitic": F_parasitic,
-            "F_measured": F_measured,
-            "f_projected": f_projected,
-            "f_norm_full": f_norm_full,
-            "in_contact": in_contact,
-            "ff_enabled": ff_enabled,
-            "force_error": force_error,
-            "F_correction": F_correction,
-            "integral": self.pi._integral,
-            "F_cmd_unclamped": F_cmd_unclamped,
-            "F_cmd": F_cmd,
-            "clamped": F_cmd_unclamped != F_cmd,
-        }
-        return F_cmd, c.target_torque, K, diag
-
-    def override_action(
-        self,
-        action_dict: dict,
+        controller_action: dict,
         arm,
         dt: float,
-    ) -> dict:
-        """Override the compliance head outputs in the (batched) action dict.
+    ) -> tuple[dict, dict]:
+        """Modify only the surface-axis virtual-target to track the desired force.
 
-        Reads the current EEF position and wrench from the real robot arm,
-        replaces ``action.normal_force``, ``action.normal_torque``, and
-        ``action.estimated_stiffness`` with analytical/PI outputs, and leaves
-        the pose-head outputs (position, rotation, contact_direction) untouched.
+        Parameters
+        ----------
+        controller_action : dict
+            Must contain ``action.position`` (3,), ``action.orientation`` (4,),
+            ``action.stiffness_diag`` (6,) — the output of
+            ``process_factored_action_dict``.
+        arm : CompliantController
+            Live robot handle for reading EEF pose and wrench.
+        dt : float
+            Control timestep (seconds).
+
+        Returns
+        -------
+        controller_action : dict
+            Same dict with ``action.position[surface_axis]`` potentially modified.
+        diag : dict
+            Diagnostic data for logging.
         """
-        contact_dir_t = action_dict["action.contact_direction"]
-        nominal_pos_t = action_dict["action.ref_position"]
+        c = self.cfg
+        ax = c.surface_axis
 
-        contact_dir = contact_dir_t.detach().cpu().numpy().reshape(-1)[:3] \
-            if isinstance(contact_dir_t, torch.Tensor) else np.asarray(contact_dir_t).reshape(-1)[:3]
-        x_nominal = nominal_pos_t.detach().cpu().numpy().reshape(-1)[:3] \
-            if isinstance(nominal_pos_t, torch.Tensor) else np.asarray(nominal_pos_t).reshape(-1)[:3]
+        eef_pose = arm.end_effector()
+        x_actual = np.asarray(eef_pose[:3], dtype=np.float64)
+        eef_quat = np.asarray(eef_pose[3:], dtype=np.float64)
 
-        x_actual = np.asarray(arm.end_effector()[:3], dtype=np.float64).reshape(3)
-        print(f"x_actual: {x_actual}")
-        wrench = np.asarray(arm.get_wrench(), dtype=np.float64).reshape(-1) # force felt by the robot (direction is opposite of the contact direction)
-        print(f"wrench: {wrench}")
-
-        # Transform wrench from tool frame to world frame TODO (malek): check if this is correct with cristian
-        eef_quat = np.asarray(arm.end_effector()[3:], dtype=np.float64)
+        wrench_raw = np.asarray(arm.get_wrench(), dtype=np.float64).reshape(-1)
         R_eef = transformations.rotation_matrix_from_quaternion(eef_quat)[:3, :3]
-        wrench[:3] = R_eef @ wrench[:3]   # forces: tool → world
-        wrench[3:] = R_eef @ wrench[3:]   # torques: tool → world
+        f_world = R_eef @ wrench_raw[:3]
 
-        F_cmd, tau_cmd, K, diag = self.compute(
-            contact_direction=contact_dir,
-            x_nominal=x_nominal,
-            x_actual=x_actual,
-            wrench=wrench,
-            dt=dt,
-        )
+        # Measured push-force along surface axis.
+        # Sensor reads reaction (opposite of push direction), so negate with
+        # push_sign to get a positive value when the robot is pushing.
+        f_push_raw = float(-c.surface_push_sign * f_world[ax])
+        f_push = self.smooth_force(max(f_push_raw, 0.0))
+        in_contact = f_push > c.contact_threshold
 
-        # ---- Structured per-step diagnostics -------------------------------
-        self._call_count += 1
-        if self.cfg.debug_log_every and (self._call_count % self.cfg.debug_log_every) == 0:
-            logger.info(
-                "[pid] t=%04d | contact=%s ff=%s | F_meas=%.2f (proj=%.2f, full=%.2f) "
-                "| off_raw=%+.4fm off=%+.4fm | K=%.0f | F_para=%+.2f F_corr=%+.2f "
-                "int=%+.2f | F_cmd=%+.2f (unclamped=%+.2f, clamped=%s)",
-                self._call_count,
-                diag["in_contact"],
-                diag["ff_enabled"],
-                diag["F_measured"],
-                diag["f_projected"],
-                diag["f_norm_full"],
-                diag["tracking_offset_raw"],
-                diag["tracking_offset"],
-                diag["K"],
-                diag["F_parasitic"],
-                diag["F_correction"],
-                diag["integral"],
-                diag["F_cmd"],
-                diag["F_cmd_unclamped"],
-                diag["clamped"],
-            )
-            # Extra detail when raw tracking offset hit the clamp
-            if abs(diag["tracking_offset_raw"]) > self.cfg.max_tracking_offset:
-                logger.warning(
-                    "[pid]   x_nominal=%s x_actual=%s d=%s |d|=%.3f",
-                    np.array2string(diag["x_nominal"], precision=3),
-                    np.array2string(diag["x_actual"], precision=3),
-                    np.array2string(diag["d"], precision=3),
-                    diag["d_norm_raw"],
-                )
+        K_ax = float(controller_action["action.stiffness_diag"][ax])
+        K_ax = max(K_ax, 50.0)
 
-        device = contact_dir_t.device if isinstance(contact_dir_t, torch.Tensor) else torch.device("cuda")
+        vt_pos = controller_action["action.position"].copy()
+        vt_policy = float(vt_pos[ax])
 
-        def write_like(key: str, value: float):
-            t = action_dict[key]
-            if isinstance(t, torch.Tensor):
-                action_dict[key] = torch.full_like(t, float(value))
+        if in_contact or not c.override_only_in_contact:
+            # Feedforward: set virtual target so FDCC generates desired force.
+            # FDCC: F_ax = K * (vt_ax - actual_ax)
+            # Desired: F_ax = push_sign * target_force
+            # => vt_ax = actual_ax + push_sign * target_force / K
+            vt_ff = x_actual[ax] + c.surface_push_sign * c.target_force / K_ax
+
+            # PI feedback correction
+            if in_contact:
+                error = c.target_force - f_push
+                correction = self.pi.update(error, dt)
+                correction = float(np.clip(correction, -c.max_force_correction, c.max_force_correction))
             else:
-                action_dict[key] = torch.tensor([[value]], device=device, dtype=torch.float32)
+                error = 0.0
+                correction = 0.0
 
-        write_like("action.normal_force", F_cmd)
-        write_like("action.normal_torque", tau_cmd)
-        write_like("action.estimated_stiffness", K)
+            vt_ax = vt_ff + c.surface_push_sign * correction / K_ax
 
-        return action_dict
+            # Safety: clamp offset from current actual position
+            vt_ax = float(np.clip(
+                vt_ax,
+                x_actual[ax] - c.max_vt_offset,
+                x_actual[ax] + c.max_vt_offset,
+            ))
+
+            vt_pos[ax] = vt_ax
+        else:
+            error = 0.0
+            correction = 0.0
+
+        controller_action["action.position"] = vt_pos
+
+        diag = {
+            "f_world_ax": float(f_world[ax]),
+            "f_push_raw": f_push_raw,
+            "f_push": f_push,
+            "in_contact": in_contact,
+            "K_ax": K_ax,
+            "vt_policy": vt_policy,
+            "vt_final": float(vt_pos[ax]),
+            "x_actual_ax": float(x_actual[ax]),
+            "error": error,
+            "correction": correction,
+            "integral": self.pi._integral,
+        }
+
+        self._call_count += 1
+        if c.debug_log_every and (self._call_count % c.debug_log_every) == 0:
+            logger.info(
+                "[z-pid] t=%04d | contact=%s | F_push=%.2f (raw=%.2f) "
+                "| K=%.0f | err=%+.2f corr=%+.2f int=%+.2f "
+                "| vt_policy=%.4f vt_final=%.4f actual=%.4f",
+                self._call_count,
+                in_contact,
+                f_push,
+                f_push_raw,
+                K_ax,
+                error,
+                correction,
+                self.pi._integral,
+                vt_policy,
+                float(vt_pos[ax]),
+                float(x_actual[ax]),
+            )
+
+        return controller_action, diag
 
 
 # ---------------------------------------------------------------------------
@@ -470,13 +346,7 @@ def format_real_robot_observations(
 # ---------------------------------------------------------------------------
 
 def convert_policy_action(action_dict: dict) -> dict:
-    """Strip the policy batch dimension and convert tensors to numpy arrays.
-
-    FDCCEnv.prepare_action dispatches on the presence of
-    ``action.contact_direction`` to handle factored actions internally via
-    ``process_factored_action_dict`` (variable-kp, quaternion), so we just
-    hand the factored numpy dict through.
-    """
+    """Strip batch dimension and convert tensors to numpy."""
     env_action = {}
     for key, value in action_dict.items():
         if isinstance(value, torch.Tensor):
@@ -486,11 +356,36 @@ def convert_policy_action(action_dict: dict) -> dict:
     return env_action
 
 
+def factored_to_controller(
+    env_action: dict,
+    default_stiffness: float,
+    default_stiffness_rot: float,
+) -> dict:
+    """Run ``process_factored_action_dict`` and unpack into a controller dict.
+
+    Returns a dict with ``action.position`` (3,), ``action.orientation`` (4,),
+    and ``action.stiffness_diag`` (6,).
+    """
+    fvt = process_factored_action_dict(
+        env_action,
+        default_stiffness=default_stiffness,
+        default_stiffness_rot=default_stiffness_rot,
+        characteristic_length=0.1,
+        use_isotropic_stiffness=False,
+        controller_type="variable_kp",
+        orientation_representation="quaternion",
+    )
+    return {
+        "action.position": fvt[0:3],
+        "action.orientation": fvt[3:7],
+        "action.stiffness_diag": fvt[7:13],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-# config_path is relative to this file's directory
 @hydra.main(
     version_base=None,
     config_path="../../../../../dependencies/comet/configs",
@@ -500,7 +395,7 @@ def main(cfg: DictConfig) -> None:
     eval_dir = Path(cfg.eval.base.load_ckpt) / "eval" / str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     eval_dir.mkdir(parents=True, exist_ok=True)
 
-    setup_logging(eval_dir / "evaluation_pid.log")
+    setup_logging(eval_dir / "evaluation_z_pid.log")
 
     seed = cfg.eval.seed
     num_rollouts = cfg.eval.num_rollouts
@@ -514,7 +409,7 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Results will be saved to: {eval_dir}")
 
     # ------------------------------------------------------------------
-    # Load policy (pose head is what matters; compliance head is overridden)
+    # Load policy (all heads used; Z-axis PID acts post-factored)
     # ------------------------------------------------------------------
     ckpt_dir = Path(cfg.eval.base.load_ckpt)
     logger.info(f"Loading policy from: {ckpt_dir}")
@@ -552,39 +447,42 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Control frequency: {control_frequency} Hz (dt={dt:.4f}s)")
 
     # ------------------------------------------------------------------
-    # Build the analytical force mapper
+    # Build the Z-axis force controller (reads from eval.pid section)
     # ------------------------------------------------------------------
+    pid_cfg = cfg.eval.pid
 
-    force_cfg = ForceMapperConfig(
-        target_force=cfg.eval.pid.target_force,
-        use_isotropic_stiffness=cfg.eval.pid.use_isotropic_stiffness,
-        kp_force=cfg.eval.pid.kp_force,
-        ki_force=cfg.eval.pid.ki_force,
-        max_integral=cfg.eval.pid.max_integral,
-        contact_threshold=cfg.eval.pid.contact_threshold,
-        force_ema_alpha=cfg.eval.pid.force_ema_alpha,
-        max_tracking_offset=cfg.eval.pid.max_tracking_offset,
-        pre_contact_force_cmd=cfg.eval.pid.pre_contact_force_cmd,
-        f_cmd_rel_min=cfg.eval.pid.f_cmd_rel_min,
-        f_cmd_rel_max=cfg.eval.pid.f_cmd_rel_max,
-        k_min=cfg.eval.pid.k_min,
-        k_max=cfg.eval.pid.k_max,
-        debug_log_every=cfg.eval.pid.debug_log_every,
-        feedforward_requires_contact=cfg.eval.pid.feedforward_requires_contact,
-        use_projected_force_feedback=cfg.eval.pid.use_projected_force_feedback,
+    z_force_cfg = ZForceConfig(
+        target_force=pid_cfg.target_force,
+        surface_axis=int(OmegaConf.select(cfg, "eval.pid.surface_axis", default=2)),
+        surface_push_sign=float(OmegaConf.select(cfg, "eval.pid.surface_push_sign", default=-1.0)),
+        kp_force=pid_cfg.kp_force,
+        ki_force=pid_cfg.ki_force,
+        max_integral=pid_cfg.max_integral,
+        contact_threshold=pid_cfg.contact_threshold,
+        force_ema_alpha=pid_cfg.force_ema_alpha,
+        max_force_correction=float(OmegaConf.select(cfg, "eval.pid.max_force_correction", default=50.0)),
+        max_vt_offset=float(OmegaConf.select(cfg, "eval.pid.max_vt_offset", default=0.05)),
+        override_only_in_contact=bool(OmegaConf.select(cfg, "eval.pid.override_only_in_contact", default=True)),
+        debug_log_every=pid_cfg.debug_log_every,
     )
-    force_mapper = AnalyticalForceMapper(force_cfg)
+    z_force_ctrl = ZAxisForceController(z_force_cfg)
+
+    logger.info(
+        "Z-axis PID: target=%.1f N, axis=%d, push_sign=%.0f, Kp=%.3f, Ki=%.3f",
+        z_force_cfg.target_force,
+        z_force_cfg.surface_axis,
+        z_force_cfg.surface_push_sign,
+        z_force_cfg.kp_force,
+        z_force_cfg.ki_force,
+    )
 
     # ------------------------------------------------------------------
     # Build FDCCEnv
     # ------------------------------------------------------------------
-    rospy.init_node("evaluate_policy_pid", anonymous=False)
+    rospy.init_node("evaluate_policy_pid_test", anonymous=False)
     logger.info("ROS node initialized")
 
     env = FDCCEnv(config=cfg, use_torch_for_cameras=False)
-
-    # FDCCEnv.reset() asserts reference_trajectory is not None even though
-    # it is unused during the actual reset movement — satisfy the check.
     env.reference_trajectory = []
 
     actions_as_deltas = env.actions_as_deltas
@@ -592,9 +490,11 @@ def main(cfg: DictConfig) -> None:
     if actions_as_deltas:
         logger.warning(
             "env.actions_as_deltas is True but factored actions are absolute. "
-            "FDCCEnv.prepare_action emits a quaternion target; make sure the "
-            "env config has actions_as_deltas=false for factored-action checkpoints."
+            "Make sure the env config has actions_as_deltas=false."
         )
+
+    default_stiffness = float(env.controller_config.stiffness)
+    default_stiffness_rot = float(env.controller_config.stiffness)
 
     # ------------------------------------------------------------------
     # FT Visualizer
@@ -624,7 +524,6 @@ def main(cfg: DictConfig) -> None:
     force_violations = 0
     all_rollout_frames = []
 
-    # Force-tracking metrics (computed only during contact)
     required_force_errors = []
     excess_force_errors = []
     force_tracking_errors = []
@@ -646,7 +545,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     with Progress(*progress_columns, console=console) as progress:
-        rollout_task = progress.add_task("Evaluation (PID compliance)", total=num_rollouts)
+        rollout_task = progress.add_task("Evaluation (Z-axis PID)", total=num_rollouts)
 
         for rollout_id in range(num_rollouts):
             step_task = progress.add_task(
@@ -654,7 +553,6 @@ def main(cfg: DictConfig) -> None:
                 total=max_timesteps,
             )
 
-            # Reset and wait for user confirmation
             env.reset(move_robot=True)
             progress.stop()
             input(f"\n  Rollout {rollout_id + 1}/{num_rollouts} — press Enter to start...")
@@ -662,10 +560,13 @@ def main(cfg: DictConfig) -> None:
 
             env.activate_compliance_control()
             policy.reset()
-            force_mapper.reset()
+            z_force_ctrl.reset()
 
-            desired_force = force_cfg.target_force
-            logger.info(f"Rollout {rollout_id} | target force: {desired_force:.1f} N")
+            logger.info(
+                "Rollout %d | target Z-force: %.1f N (axis=%d, sign=%.0f)",
+                rollout_id, z_force_cfg.target_force,
+                z_force_cfg.surface_axis, z_force_cfg.surface_push_sign,
+            )
 
             episode_frames = []
             force_violation = False
@@ -684,11 +585,9 @@ def main(cfg: DictConfig) -> None:
                     for k, v in obs.items()
                 }
 
-                # --- Act (pose head from policy, compliance head from PI) ---
+                # --- Policy predicts full factored action (no override) ---
                 with torch.no_grad():
                     action = policy.select_action(policy_obs)
-
-                action = force_mapper.override_action(action, env.arm, dt)
 
                 action_dict = {
                     k: v.squeeze(0) if isinstance(v, torch.Tensor) else v
@@ -696,8 +595,21 @@ def main(cfg: DictConfig) -> None:
                 }
                 env_action = convert_policy_action(action_dict)
 
-                # --- Step ---
-                timestep = env.step(env_action)
+                # --- Convert factored → controller-ready (virtual target + stiffness) ---
+                controller_action = factored_to_controller(
+                    env_action,
+                    default_stiffness=default_stiffness,
+                    default_stiffness_rot=default_stiffness_rot,
+                )
+
+                # --- Z-axis PID: override only surface-axis of virtual target ---
+                controller_action, diag = z_force_ctrl.override_controller_action(
+                    controller_action, env.arm, dt,
+                )
+
+                # --- Step (controller_action has position+orientation+stiffness,
+                #     so FDCCEnv.prepare_action passes it through unchanged) ---
+                timestep = env.step(controller_action)
                 done = timestep.last()
 
                 # --- Record images for video ---
@@ -711,9 +623,9 @@ def main(cfg: DictConfig) -> None:
                 # --- FT / force-tracking metrics ---
                 wrench = env.arm.get_wrench()
                 measured_force = float(np.linalg.norm(np.asarray(wrench)[:3]))
-                is_contact = measured_force > force_cfg.contact_threshold
+                is_contact = measured_force > z_force_cfg.contact_threshold
                 if is_contact:
-                    tracking_error = desired_force - measured_force
+                    tracking_error = z_force_cfg.target_force - diag["f_push"]
                     force_tracking_errors.append(abs(tracking_error))
                     if tracking_error > 0:
                         required_force_errors.append(tracking_error)
@@ -725,11 +637,8 @@ def main(cfg: DictConfig) -> None:
                     required_force_errors.append(0.0)
                     excess_force_errors.append(0.0)
 
-                stiffness_val = action_dict["action.estimated_stiffness"]
-                stiffness = float(
-                    stiffness_val.cpu().item() if isinstance(stiffness_val, torch.Tensor) else stiffness_val
-                )
-                ft_visualizer.add_data(t, wrench, stiffness)
+                stiffness_val = diag["K_ax"]
+                ft_visualizer.add_data(t, wrench, stiffness_val)
 
                 total_steps_completed += 1
                 progress.update(
