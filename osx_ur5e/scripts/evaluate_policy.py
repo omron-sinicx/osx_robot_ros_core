@@ -49,6 +49,7 @@ from comet.common.utils.utils import load_base_policy
 from comet.common.utils.ft_visualizer import FTVisualizer
 from comet.common.utils.viz_utils import save_to_video
 from comet.common.policies.types import FeatureType
+from comet.common.policies.guidance_utils import setup_guidance, feed_force_to_guidance
 
 from osx_ur5e.fdcc_env import FDCCEnv
 
@@ -119,7 +120,7 @@ def format_real_robot_observations(
         "observation.eef.angular_velocity":    eef_velocity[3:],
         "observation.eef.rotation_ortho6":     transformations.ortho6_from_quaternion(eef[3:]),
         "observation.eef.rotation_axis_angle": transformations.axis_angle_from_quaternion(eef[3:]),
-        "observation.ft":                      arm.get_wrench(), # TODO (malek): check if this is in the world frame or the tool frame with cristian
+        "observation.ft":                      arm.get_wrench(),  # TODO (malek): check if this is in the world frame or the tool frame with cristian
     }
 
     obs = {}
@@ -238,6 +239,11 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Control frequency: {control_frequency} Hz")
 
     # ------------------------------------------------------------------
+    # Guidance setup
+    # ------------------------------------------------------------------
+    setup_guidance(policy, cfg, base_cfg, features, control_frequency)
+
+    # ------------------------------------------------------------------
     # Load env config and build FDCCEnv
     # ------------------------------------------------------------------
     # env_config can be overridden via: +eval.env_config=/path/to/yaml
@@ -347,47 +353,46 @@ def main(cfg: DictConfig) -> None:
                 }
 
                 # --- Act ---
-                with torch.no_grad():
-                    action = policy.select_action(policy_obs)
-                    if False:
-                        # action["action.normal_force"] = torch.tensor([10], device="cuda")  # override for now to test the controller
-                        print("will edit the force")
-                        # action["action.contact_direction"] = torch.tensor([[0.0, 0.0, -1.0]], device="cuda")  # straight down
-                        target_force = 5.0
-                        action["action.normal_force"] = torch.tensor([target_force], device="cuda")  # override for now to test the controller
-                        # f_low = DEFAULT_STIFFNESS_PARAMS['f_low']
-                        # f_high = DEFAULT_STIFFNESS_PARAMS['f_high']
-                        # K_max = DEFAULT_STIFFNESS_PARAMS['k_max']
-                        # K_min = DEFAULT_STIFFNESS_PARAMS['k_min']
-                        f_low = 1.0
-                        f_high = 10.0
-                        K_max = 1000
-                        K_min = 500.0
-                        # max_displacement = DEFAULT_STIFFNESS_PARAMS['max_displacement']
-                        max_displacement = 0.015
+                action = policy.select_action(policy_obs)
+                if False:
+                    # action["action.normal_force"] = torch.tensor([10], device="cuda")  # override for now to test the controller
+                    print("will edit the force")
+                    # action["action.contact_direction"] = torch.tensor([[0.0, 0.0, -1.0]], device="cuda")  # straight down
+                    target_force = 5.0
+                    action["action.normal_force"] = torch.tensor([target_force], device="cuda")  # override for now to test the controller
+                    # f_low = DEFAULT_STIFFNESS_PARAMS['f_low']
+                    # f_high = DEFAULT_STIFFNESS_PARAMS['f_high']
+                    # K_max = DEFAULT_STIFFNESS_PARAMS['k_max']
+                    # K_min = DEFAULT_STIFFNESS_PARAMS['k_min']
+                    f_low = 1.0
+                    f_high = 10.0
+                    K_max = 1000
+                    K_min = 500.0
+                    # max_displacement = DEFAULT_STIFFNESS_PARAMS['max_displacement']
+                    max_displacement = 0.015
 
-                        f_norm = abs(target_force)
-                        if f_norm < f_low:
-                            K = K_max
-                        elif f_norm > f_high:
-                            K = K_min
-                        else:
-                            # K = K_max - (K_max - K_min) * (f_norm - f_low) / (f_high - f_low)
-                            K_gap = K_max - K_min
-                            f_gap = f_high - f_low
-                            K = K_max - K_gap * (f_norm - f_low) / f_gap
+                    f_norm = abs(target_force)
+                    if f_norm < f_low:
+                        K = K_max
+                    elif f_norm > f_high:
+                        K = K_min
+                    else:
+                        # K = K_max - (K_max - K_min) * (f_norm - f_low) / (f_high - f_low)
+                        K_gap = K_max - K_min
+                        f_gap = f_high - f_low
+                        K = K_max - K_gap * (f_norm - f_low) / f_gap
 
-                        if max_displacement > 0 and f_norm > f_low:
-                            k_floor = f_norm / max_displacement
-                            print(f"{k_floor=}")
-                            # return max(k_raw, k_floor)
-                            K = np.clip(k_floor, K_min, K_max)
+                    if max_displacement > 0 and f_norm > f_low:
+                        k_floor = f_norm / max_displacement
+                        print(f"{k_floor=}")
+                        # return max(k_raw, k_floor)
+                        K = np.clip(k_floor, K_min, K_max)
 
-                        print(f"{K=}")
+                    print(f"{K=}")
 
-                        action["action.estimated_stiffness"] = torch.tensor([K], device="cuda")
+                    action["action.estimated_stiffness"] = torch.tensor([K], device="cuda")
 
-                action_dict = { # FIXME: why do this if it exist in the fucntion below as well (convert_policy_action)?
+                action_dict = {  # FIXME: why do this if it exist in the fucntion below as well (convert_policy_action)?
                     k: v.squeeze(0) if isinstance(v, torch.Tensor) else v
                     for k, v in action.items()
                 }
@@ -397,6 +402,10 @@ def main(cfg: DictConfig) -> None:
                 timestep = env.step(env_action)
                 done = timestep.last()
 
+                # --- Feed force measurement back to guidance ---
+                wrench = env.arm.get_wrench()
+                feed_force_to_guidance(policy, np.linalg.norm(wrench[:3]))  # TODO (malek) check the direction and the meaning of this readin
+
                 # --- Record images for video ---
                 if save_video and env.image_recorder is not None:
                     raw_images = env.image_recorder.get_images()
@@ -405,8 +414,7 @@ def main(cfg: DictConfig) -> None:
                         frame = np.concatenate(frames_list, axis=1) if len(frames_list) > 1 else frames_list[0]
                         episode_frames.append(frame)
 
-                # --- FT tracking ---
-                wrench = env.arm.get_wrench()
+                # --- FT tracking (wrench already fetched above for guidance) ---
                 stiffness = None
                 if include_stiffness:
                     if "action.stiffness_diag" in action_dict:
@@ -432,6 +440,14 @@ def main(cfg: DictConfig) -> None:
                     )
                     break
 
+            #  TODO (remove this after the experiment) Still under compliance — gently retract from the surface
+            current_pose = env.arm.end_effector()
+            retract_pose = current_pose.copy()
+            retract_pose[2] -= 0.05  # 5cm away from surface (adjust sign to your frame)
+            env.arm.set_cartesian_target_pose(retract_pose)
+            rospy.sleep(1.5)  # let the compliant controller do the work gently
+
+            # NOW safe to switch — robot is no longer in contact
             env.deactivate_compliance_control()
 
             steps_taken = t + 1
