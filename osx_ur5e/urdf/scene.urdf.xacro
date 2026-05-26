@@ -48,6 +48,9 @@
     </plugin>
   </gazebo>
 
+  <xacro:include filename="$(find osx_ur5e)/urdf/wipe_vertical_gripper.urdf.xacro" />
+  <xacro:wipe_vertical_gripper prefix="" parent="tool0" />
+
   <!-- The "world" link definition should be removed, but apparently it is necessary for Gazebo -->
   <link name="world" />
   <joint name="world_osx_joint" type="fixed">
