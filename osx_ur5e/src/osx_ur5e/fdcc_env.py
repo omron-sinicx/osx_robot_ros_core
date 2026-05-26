@@ -1,4 +1,7 @@
-from comet.common.utils.vt_utils import process_factored_action_dict
+from comet.common.utils.vt_utils import (
+    process_factored_action_dict,
+    compute_directional_stiffness_diagonal,
+)
 import rospy
 import numpy as np
 from omegaconf import DictConfig
@@ -110,9 +113,41 @@ class FDCCEnv(BaseEnv):
                 "action.orientation": fvt_action[3:7],
                 "action.stiffness_diag": fvt_action[7:13],
             }
+        elif "action.virtual_target_position" in action:  # VT mode
+            vt_pos = action["action.virtual_target_position"]
+            vt_rot_ortho6 = action["action.virtual_target_rotation"]
+            estimated_stiffness = action["action.estimated_stiffness"]
+
+            stiffness_val = float(estimated_stiffness[0]) if np.ndim(estimated_stiffness) > 0 else float(estimated_stiffness)
+
+            if "action.ref_position" in action:
+                ref_position = action["action.ref_position"]
+                ref_rotation_ortho6 = action["action.ref_rotation_ortho6"]
+            else:
+                current_eef = self.arm.end_effector()
+                ref_position = current_eef[:3]
+                ref_rotation_ortho6 = transformations.ortho6_from_quaternion(current_eef[3:])
+
+            stiffness_diag = compute_directional_stiffness_diagonal(
+                position=ref_position,
+                virtual_target_position=vt_pos,
+                estimated_stiffness=stiffness_val,
+                default_stiffness=self.controller_config.stiffness,
+                default_stiffness_rot=self.controller_config.stiffness,
+                rotation_ortho6=ref_rotation_ortho6,
+                virtual_target_rotation_ortho6=vt_rot_ortho6,
+            )
+
+            vt_quat = transformations.quaternion_from_ortho6(vt_rot_ortho6)
+
+            controller_action = {
+                "action.position": vt_pos,
+                "action.orientation": vt_quat,
+                "action.stiffness_diag": stiffness_diag,
+            }
         elif "action.position" in action and "action.orientation" in action:  # raw_actions mode
             controller_action = action
-        else:  # TODO implement VT mode
+        else:
             raise ValueError(f"Invalid action: {action}")
         return controller_action
 

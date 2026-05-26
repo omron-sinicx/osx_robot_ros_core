@@ -111,7 +111,11 @@ def build_env_action(frame: dict, action_type: str, replay_action_keys: list) ->
         env_action["action.orientation"] = transformations.quaternion_from_ortho6(frame_np["action.rotation_ortho6"])
         env_action["action.stiffness_diag"] = frame_np["action.stiffness_diag"]
     elif action_type == "virtual_target_actions":
-        raise NotImplementedError("virtual_target_actions not implemented")
+        env_action["action.virtual_target_position"] = frame_np["action.virtual_target_position"]
+        env_action["action.virtual_target_rotation"] = frame_np["action.virtual_target_rotation"]
+        env_action["action.estimated_stiffness"] = frame_np["action.estimated_stiffness"]
+        env_action["action.ref_position"] = frame_np["observation.eef.position"]
+        env_action["action.ref_rotation_ortho6"] = frame_np["observation.eef.rotation_ortho6"]
     elif action_type == "factored_actions":
         env_action["action.ref_position"] = frame_np["action.ref_position"]
         env_action["action.ref_rotation_ortho6"] = frame_np["action.ref_rotation_ortho6"]
@@ -453,7 +457,7 @@ def main(cfg: DictConfig) -> None:
     fps = cfg.dataset.dataset.fps
 
     start_episode = int(cfg.dataset.dataset.episode_idx)
-    num_episodes = int(OmegaConf.select(cfg, "eval.num_episodes", default=1)) # FIXME i dont know from where it imports this
+    num_episodes = int(OmegaConf.select(cfg, "eval.num_episodes", default=1))  # FIXME i dont know from where it imports this
     total_episodes = dataset.meta.total_episodes
     end_episode = min(start_episode + num_episodes, total_episodes)
 
@@ -506,7 +510,7 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"Episode {episode_idx}: {ep_len} steps")
 
         # -- Collect dataset ground truth --
-        ds_gt = extract_dataset_ground_truth(dataset, episode_idx, include_stiffness, ds_stiffness_key)
+        ds_gt = extract_dataset_ground_truth(dataset, episode_idx, include_stiffness, stiffness_key="action.stiffness_diag")
 
         # -- Run primary replay --
         logger.info(f"Running primary replay: {primary_action_type}")
