@@ -424,7 +424,7 @@ def main(cfg: DictConfig) -> None:
     required_factored = (
         "action.ref_position",
         "action.ref_rotation_ortho6",
-        "action.contact_direction",
+        "action.compliance_direction",
         "action.normal_force",
         "action.normal_torque",
         "action.estimated_stiffness",

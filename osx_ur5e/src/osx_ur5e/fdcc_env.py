@@ -100,7 +100,7 @@ class FDCCEnv(BaseEnv):
         """
             Prepare the action for the controller.
         """
-        if "action.contact_direction" in action:  # FVT mode
+        if "action.compliance_direction" in action or "action.contact_direction" in action:  # FVT mode
             fvt_action = process_factored_action_dict(action,
                                                       default_stiffness=self.controller_config.stiffness,
                                                       default_stiffness_rot=self.controller_config.stiffness,

@@ -110,7 +110,8 @@ def build_env_action(frame: dict, action_type: str, replay_action_keys: list) ->
     elif action_type == "factored_actions":
         env_action["action.ref_position"] = frame_np["action.ref_position"]
         env_action["action.ref_rotation_ortho6"] = frame_np["action.ref_rotation_ortho6"]
-        env_action["action.contact_direction"] = frame_np["action.contact_direction"]
+        env_action["action.compliance_direction"] = frame_np.get("action.compliance_direction",
+                                                                   frame_np.get("action.contact_direction"))
         env_action["action.normal_force"] = frame_np["action.normal_force"]
         env_action["action.normal_torque"] = frame_np["action.normal_torque"]
         env_action["action.estimated_stiffness"] = frame_np["action.estimated_stiffness"]

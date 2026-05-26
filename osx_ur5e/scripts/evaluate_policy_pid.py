@@ -344,9 +344,10 @@ class AnalyticalForceMapper:
         Reads the current EEF position and wrench from the real robot arm,
         replaces ``action.normal_force``, ``action.normal_torque``, and
         ``action.estimated_stiffness`` with analytical/PI outputs, and leaves
-        the pose-head outputs (position, rotation, contact_direction) untouched.
+        the pose-head outputs (position, rotation, compliance_direction) untouched.
         """
-        contact_dir_t = action_dict["action.contact_direction"]
+        cd_key = "action.compliance_direction" if "action.compliance_direction" in action_dict else "action.contact_direction"
+        contact_dir_t = action_dict[cd_key]
         nominal_pos_t = action_dict["action.ref_position"]
 
         contact_dir = contact_dir_t.detach().cpu().numpy().reshape(-1)[:3] \
@@ -529,7 +530,7 @@ def main(cfg: DictConfig) -> None:
     required_factored = (
         "action.ref_position",
         "action.ref_rotation_ortho6",
-        "action.contact_direction",
+        "action.compliance_direction",
         "action.normal_force",
         "action.normal_torque",
         "action.estimated_stiffness",
