@@ -120,18 +120,13 @@ class FDCCEnv(BaseEnv):
         """
         if "action.contact_direction" in action:  # FVT mode
             self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
-            fvt_action = process_factored_action_dict(action,
-                                                      default_stiffness=self.controller_config.stiffness,
-                                                      default_stiffness_rot=self.controller_config.stiffness,
-                                                      characteristic_length=self.characteristic_length,
-                                                      use_isotropic_stiffness=False,
-                                                      controller_type="variable_kp",
-                                                      orientation_representation="quaternion")
-            controller_action = {
-                "action.position": fvt_action[0:3],
-                "action.orientation": fvt_action[3:7],
-                "action.stiffness_diag": fvt_action[7:13],
-            }
+            controller_action = process_factored_action_dict(action,
+                                                             default_stiffness=self.controller_config.stiffness,
+                                                             default_stiffness_rot=self.controller_config.stiffness,
+                                                             characteristic_length=self.characteristic_length,
+                                                             use_isotropic_stiffness=False,
+                                                             orientation_representation="quaternion",
+                                                             full_stiffness_matrix=True)
         elif "action.virtual_target_position" in action:  # VT mode
             self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
             vt_pos = action["action.virtual_target_position"]
