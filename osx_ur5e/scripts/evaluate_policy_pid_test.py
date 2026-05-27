@@ -360,6 +360,7 @@ def factored_to_controller(
     env_action: dict,
     default_stiffness: float,
     default_stiffness_rot: float,
+    characteristic_length: float = 0.1,
 ) -> dict:
     """Run ``process_factored_action_dict`` and unpack into a controller dict.
 
@@ -370,7 +371,7 @@ def factored_to_controller(
         env_action,
         default_stiffness=default_stiffness,
         default_stiffness_rot=default_stiffness_rot,
-        characteristic_length=0.1,
+        characteristic_length=characteristic_length,
         use_isotropic_stiffness=False,
         controller_type="variable_kp",
         orientation_representation="quaternion",
@@ -600,6 +601,7 @@ def main(cfg: DictConfig) -> None:
                     env_action,
                     default_stiffness=default_stiffness,
                     default_stiffness_rot=default_stiffness_rot,
+                    characteristic_length=env.characteristic_length,
                 )
 
                 # --- Z-axis PID: override only surface-axis of virtual target ---

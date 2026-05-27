@@ -65,6 +65,7 @@ class ReplayResult:
     action_type: str
     eef_pos: np.ndarray
     force_norm: np.ndarray
+    torque_norm: np.ndarray
     stiffness: np.ndarray | None = None
     force_violation: bool = False
 
@@ -166,6 +167,7 @@ def replay_single_episode(
 
     eef_pos = np.zeros((ep_len, 3))
     force_norm = np.zeros(ep_len)
+    torque_norm = np.zeros(ep_len)
     stiffness = np.zeros(ep_len) if include_stiffness else None
 
     env.reset(move_robot=True)
@@ -191,15 +193,17 @@ def replay_single_episode(
 
             wrench = env.arm.get_wrench()
             force_norm[i] = np.linalg.norm(wrench[:3])
+            torque_norm[i] = np.linalg.norm(wrench[3:])
 
             if include_stiffness:
-                stiffness[i] = float(np.mean(env.last_stiffness_params))
+                stiffness[i] = env.last_compliance_stiffness
 
             if timestep.last():
                 logger.warning(f"Episode {episode_idx} ended early at step {i} (force limit exceeded)")
                 force_violation = True
                 eef_pos = eef_pos[:i + 1]
                 force_norm = force_norm[:i + 1]
+                torque_norm = torque_norm[:i + 1]
                 if include_stiffness:
                     stiffness = stiffness[:i + 1]
                 break
@@ -218,6 +222,7 @@ def replay_single_episode(
         action_type=action_type,
         eef_pos=eef_pos,
         force_norm=force_norm,
+        torque_norm=torque_norm,
         stiffness=stiffness,
         force_violation=force_violation,
     )
@@ -241,6 +246,7 @@ def extract_dataset_ground_truth(
 
     eef_pos = np.zeros((ep_len, 3))
     force_norm = np.zeros(ep_len)
+    torque_norm = np.zeros(ep_len)
     stiffness = np.zeros(ep_len) if include_stiffness else None
 
     for i, t in enumerate(range(ep_start, ep_end)):
@@ -254,12 +260,13 @@ def extract_dataset_ground_truth(
             ds_ft = frame["observation.ft"]
             ds_ft_np = (ds_ft.cpu().numpy() if isinstance(ds_ft, torch.Tensor) else np.array(ds_ft)).flatten()
             force_norm[i] = np.linalg.norm(ds_ft_np[:3])
+            torque_norm[i] = np.linalg.norm(ds_ft_np[3:])
 
         if include_stiffness and stiffness_key and stiffness_key in frame:
             sv = frame[stiffness_key]
             stiffness[i] = float(np.mean(sv.cpu().numpy() if isinstance(sv, torch.Tensor) else sv))
 
-    return dict(eef_pos=eef_pos, force_norm=force_norm, stiffness=stiffness)
+    return dict(eef_pos=eef_pos, force_norm=force_norm, torque_norm=torque_norm, stiffness=stiffness)
 
 
 # ---------------------------------------------------------------------------
@@ -285,10 +292,11 @@ def plot_episode_comparison(
     """
     ds_eef = dataset_gt["eef_pos"]
     ds_force = dataset_gt["force_norm"]
+    ds_torque = dataset_gt["torque_norm"]
     ds_stiffness = dataset_gt["stiffness"]
 
     has_stiffness = ds_stiffness is not None and any(r.stiffness is not None for r in replays)
-    n_rows = 4 if has_stiffness else 3
+    n_rows = 5 if has_stiffness else 4
     fig = plt.figure(figsize=(14, 3.5 * n_rows))
     gs = gridspec.GridSpec(n_rows, 2, figure=fig, hspace=0.45, wspace=0.35)
 
@@ -373,9 +381,39 @@ def plot_episode_comparison(
     ax_fd.legend(fontsize=7)
     ax_fd.grid(True, linewidth=0.4)
 
-    # ── Row 3: Stiffness comparison (optional) ──
+    # ── Row 3 left: Torque norm comparison ──
+    ax_tn = fig.add_subplot(gs[3, 0])
+    ax_tn.plot(ds_steps, ds_torque, color="tab:grey", linestyle="--", linewidth=0.8, label="dataset")
+    for ridx, replay in enumerate(replays):
+        style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
+        steps = np.arange(len(replay.torque_norm))
+        color = style.get("torque_color", "tab:green")
+        ax_tn.plot(steps, replay.torque_norm, color=color, linewidth=0.8,
+                   alpha=style["alpha"], label=replay.action_type)
+    ax_tn.set_title("Torque norm (Nm)")
+    ax_tn.set_ylabel("||τ|| (Nm)")
+    ax_tn.set_ylim(bottom=0)
+    ax_tn.legend(fontsize=7)
+    ax_tn.grid(True, linewidth=0.4)
+
+    # ── Row 3 right: Torque difference (replay − dataset) ──
+    ax_td = fig.add_subplot(gs[3, 1])
+    td_colors = ["tab:blue", "tab:orange"]
+    for ridx, replay in enumerate(replays):
+        T = min(len(replay.torque_norm), len(ds_torque))
+        torque_diff = replay.torque_norm[:T] - ds_torque[:T]
+        steps = np.arange(T)
+        ax_td.plot(steps, torque_diff, color=td_colors[ridx % len(td_colors)], linewidth=0.8,
+                   label=replay.action_type)
+    ax_td.axhline(0, color="black", linewidth=0.5, linestyle=":")
+    ax_td.set_title("Torque difference (replay − dataset)")
+    ax_td.set_ylabel("Δτ (Nm)")
+    ax_td.legend(fontsize=7)
+    ax_td.grid(True, linewidth=0.4)
+
+    # ── Row 4: Stiffness comparison (optional) ──
     if has_stiffness:
-        ax_st = fig.add_subplot(gs[3, :])
+        ax_st = fig.add_subplot(gs[4, :])
         if ds_stiffness is not None:
             ax_st.plot(ds_steps, ds_stiffness, color="tab:grey", linestyle="--", linewidth=0.8, label="dataset")
         for ridx, replay in enumerate(replays):
@@ -384,7 +422,7 @@ def plot_episode_comparison(
                 steps = np.arange(len(replay.stiffness))
                 ax_st.plot(steps, replay.stiffness, color=style["stiff_color"], linewidth=0.8,
                            alpha=style["alpha"], label=replay.action_type)
-        ax_st.set_title("Mean stiffness")
+        ax_st.set_title("Stiffness")
         ax_st.set_ylabel("Stiffness")
         ax_st.set_xlabel("Timestep")
         ax_st.legend(fontsize=7)
@@ -495,6 +533,7 @@ def main(cfg: DictConfig) -> None:
     env.reference_trajectory = []
 
     logger.info(f"actions_as_deltas: {env.actions_as_deltas}")
+    comparison = False  # FIXME
     logger.info(f"comparison mode: {comparison}")
 
     # ------------------------------------------------------------------
