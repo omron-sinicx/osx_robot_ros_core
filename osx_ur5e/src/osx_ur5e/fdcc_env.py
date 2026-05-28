@@ -24,7 +24,6 @@ class FDCCEnv(BaseEnv):
     def __init__(self, config: DictConfig, use_torch_for_cameras=False):
         super().__init__(config, use_torch_for_cameras)
 
-        self.last_stiffness_command_stamp = 0.0
         self.last_stiffness_params = np.zeros(6)
         self.current_waypoint_index = 0
 
@@ -172,22 +171,19 @@ class FDCCEnv(BaseEnv):
         """
             actions: dictionary of actions for each robot
         """
-        stiffness_matrix = action['action.stiffness_diag']
-        if len(stiffness_matrix) == 6:
-            stiffness_diag = stiffness_matrix
-        elif len(stiffness_matrix) == 36:
+        stiffness_matrix = np.asarray(action['action.stiffness_diag'])
+        stiffness_flat = stiffness_matrix.flatten()
+        if stiffness_flat.size == 6:
+            stiffness_diag = stiffness_flat
+        elif stiffness_flat.size == 36:
             stiffness_diag = np.diag(stiffness_matrix)
         else:
-            raise ValueError(f"Invalid stiffness matrix length: {len(stiffness_matrix)}")
+            raise ValueError(f"Invalid stiffness matrix size: {stiffness_flat.size}")
 
         # Only update the stiffness if the change is significant
         if not np.all(np.isclose(self.last_stiffness_params, stiffness_diag, atol=5.0)):
-            # Cap the bandwidth to change the controller's parameters to 40hz and only if the change is significant
-            # TODO: make this more robust
-            if True:  # rospy.get_time() - self.last_stiffness_command_stamp > 0.025:
-                self.arm.update_stiffness(stiffness_matrix)
-                self.last_stiffness_params = np.copy(stiffness_diag)
-                self.last_stiffness_command_stamp = rospy.get_time()
+            self.arm.update_stiffness(stiffness_flat)
+            self.last_stiffness_params = np.copy(stiffness_diag)
 
         action_translation = action['action.position']
         action_rotation = action['action.orientation']
@@ -218,8 +214,14 @@ class FDCCEnv(BaseEnv):
 
             returns the clipped delta translation and delta orientation
         """
-
         clipped_delta_translation = np.clip(delta_translation, -self.max_delta_translation, self.max_delta_translation)
         clipped_delta_orientation = np.clip(delta_orientation, -self.max_delta_rotation, self.max_delta_rotation)
+
+        if not np.allclose(clipped_delta_translation, delta_translation) or not np.allclose(clipped_delta_orientation, delta_orientation):
+            rospy.logwarn_throttle(1,
+                                   f"Delta actions clipped!! (delta > max_delta):\n"
+                                   f"  translation: {delta_translation} -> {clipped_delta_translation}\n"
+                                   f"  orientation: {delta_orientation} -> {clipped_delta_orientation}"
+                                   )
 
         return clipped_delta_translation, clipped_delta_orientation
