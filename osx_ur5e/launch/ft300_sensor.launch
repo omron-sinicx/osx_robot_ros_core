@@ -1,0 +1,23 @@
+<launch>
+  <!-- Robotiq FT 300-S bring-up (PC direct read over RS-485/USB).
+
+       The FTDI default latency_timer (16 ms) caps the publish rate at ~62.5 Hz.
+       udev is unavailable in the container, so we set latency_timer=1 ms via
+       launch-prefix immediately before rq_sensor opens the port, guaranteeing
+       the full 100 Hz on every launch (survives container restarts).
+
+       The external FT 300-S is NOT readable through the UR e-Series controller
+       (Copilot URCap targets the built-in sensor only), so it must be read on
+       the PC. Publishes geometry_msgs/WrenchStamped (N, Nm) on /robotiq_ft_wrench
+       with header.stamp = receive time. -->
+
+  <arg name="serial_id" default="ttyUSB1"
+       doc="FTDI tty of the RS-485 converter (idProduct 6015 / 'USB TO RS-485')."/>
+  <arg name="frame_id"  default="robotiq_ft_frame_id"/>
+
+  <node name="robotiq_ft_sensor" pkg="robotiq_ft_sensor" type="rq_sensor" output="screen"
+        launch-prefix="bash -c 'echo 1 &gt; /sys/bus/usb-serial/devices/$(arg serial_id)/latency_timer; exec &quot;$@&quot;' _">
+    <param name="serial_id" value="$(arg serial_id)"/>
+    <param name="frame_id"  value="$(arg frame_id)"/>
+  </node>
+</launch>

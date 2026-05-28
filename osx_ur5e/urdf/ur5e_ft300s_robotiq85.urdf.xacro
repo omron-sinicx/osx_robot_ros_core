@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<!-- UR5e with a Robotiq FT300-S force-torque sensor sandwiched between the
+     tool flange and a Robotiq 2F-85 gripper.
+
+     The FT300-S shares the FT300 mounting envelope (41.5 mm overall height,
+     identical by Robotiq design), so the official ros-industrial robotiq_ft300
+     macro is reused for the kinematic chain. Inertial values in that macro are
+     the FT300 ones (mass 0.300 kg); the real FT300-S is 442 g with CoM
+     (-6, 0, 13.5) mm (manual section 5.2.1). They are left as-is here because
+     no consumer of this description uses the EE link inertials (robot_state_publisher
+     and the UR driver ignore them, and object inertial identification subtracts
+     the gripper contribution from real measurements after a zero calibration). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5e_ft300s_robotiq85">
+
+  <!-- UR5e parameters -->
+  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/ur5e/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/ur5e/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params" default="$(find ur_description)/config/ur5e/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params" default="$(find ur_description)/config/ur5e/visual_parameters.yaml"/>
+  <xacro:arg name="transmission_hw_interface" default="hardware_interface/PositionJointInterface"/>
+  <xacro:arg name="safety_limits" default="false"/>
+  <xacro:arg name="safety_pos_margin" default="0.15"/>
+  <xacro:arg name="safety_k_position" default="20"/>
+
+  <!-- Include UR macro -->
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur5e_macro.xacro"/>
+
+  <!-- Include Robotiq 2F-85 macro -->
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_85_gripper.urdf.xacro"/>
+
+  <!-- Include official ros-industrial Robotiq FT300 macro (sensor + mounting plate) -->
+  <xacro:include filename="$(find robotiq_ft_sensor)/urdf/robotiq_ft300.urdf.xacro"/>
+
+  <!-- Instantiate UR5e -->
+  <xacro:ur5e_robot prefix=""
+    joint_limits_parameters_file="$(arg joint_limit_params)"
+    kinematics_parameters_file="$(arg kinematics_params)"
+    physical_parameters_file="$(arg physical_params)"
+    visual_parameters_file="$(arg visual_params)"
+    transmission_hw_interface="$(arg transmission_hw_interface)"
+    safety_limits="$(arg safety_limits)"
+    safety_pos_margin="$(arg safety_pos_margin)"
+    safety_k_position="$(arg safety_k_position)"/>
+
+  <!-- Attach Robotiq FT300-S (mounting plate + sensor) to the UR flange (tool0).
+       The official macro builds along +Z, and tool0 Z points forward, so an
+       identity origin mounts the plate flush on the flange. The assembly tool
+       face ends up at tool0 Z = 0.0415 m (13 mm plate + sensor body). -->
+  <xacro:robotiq_ft300 prefix="" parent="tool0">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_ft300>
+
+  <!-- Attach Robotiq 2F-85 to the FT300-S tool face.
+       ft300_mounting_plate shares tool0's orientation, so place the gripper
+       0.0415 m forward (tool0 Z) and reuse the orientation that maps the
+       gripper X axis to the forward direction. -->
+  <xacro:robotiq_85_gripper prefix="" parent="ft300_mounting_plate">
+    <origin xyz="0 0 0.0415" rpy="0 ${-pi/2} ${pi/2}"/>
+  </xacro:robotiq_85_gripper>
+
+  <!-- TCP: gripper tip link (163mm from robotiq_85_base_link along its X axis) -->
+  <!-- Matches the dual-arm setup in osx_end_effector.urdf.xacro -->
+  <joint name="gripper_tip_joint" type="fixed">
+    <parent link="robotiq_85_base_link"/>
+    <child link="gripper_tip_link"/>
+    <origin xyz="0.163 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="gripper_tip_link"/>
+
+</robot>
