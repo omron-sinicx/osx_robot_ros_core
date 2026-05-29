@@ -4,12 +4,12 @@
 
      The FT300-S shares the FT300 mounting envelope (41.5 mm overall height,
      identical by Robotiq design), so the official ros-industrial robotiq_ft300
-     macro is reused for the kinematic chain. Inertial values in that macro are
-     the FT300 ones (mass 0.300 kg); the real FT300-S is 442 g with CoM
-     (-6, 0, 13.5) mm (manual section 5.2.1). They are left as-is here because
-     no consumer of this description uses the EE link inertials (robot_state_publisher
-     and the UR driver ignore them, and object inertial identification subtracts
-     the gripper contribution from real measurements after a zero calibration). -->
+     macro is reused for the kinematic chain. The macro's mass/CoM were
+     originally the FT300 values (300 g) — we now override them in
+     robotiq_ft300.urdf.xacro itself with the FT300-S figures (442 g, CoM
+     (-6, 0, 13.5) mm in the measurement frame, manual section 5.2.1).
+     Similarly, the 2F-85 base mass in robotiq_arg2f.xacro is bumped to make
+     the assembled gripper match the catalog 0.925 kg. -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5e_ft300s_robotiq85">
 
   <!-- UR5e parameters -->
@@ -58,12 +58,12 @@
     <origin xyz="0 0 0.0415" rpy="0 ${-pi/2} ${pi/2}"/>
   </xacro:robotiq_85_gripper>
 
-  <!-- TCP: gripper tip link (163mm from robotiq_85_base_link along its X axis) -->
-  <!-- Matches the dual-arm setup in osx_end_effector.urdf.xacro -->
+  <!-- TCP: gripper tip link. 169.9 mm = measured tool0→tip (211.4 mm) minus
+       the 41.5 mm FT300-S stack above. -->
   <joint name="gripper_tip_joint" type="fixed">
     <parent link="robotiq_85_base_link"/>
     <child link="gripper_tip_link"/>
-    <origin xyz="0.163 0 0" rpy="0 0 0"/>
+    <origin xyz="0.1699 0 0" rpy="0 0 0"/>
   </joint>
   <link name="gripper_tip_link"/>
 
