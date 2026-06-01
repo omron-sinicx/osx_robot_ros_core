@@ -131,7 +131,11 @@ def get_observations(arm: CompliantController, image_recorder: ImageRecorder) ->
         "observation.ft":                      arm.get_wrench(),
     }
     if image_recorder is not None:
-        obs.update({f"observation.images.{k}": v for k, v in image_recorder.get_images().items()})
+        images = image_recorder.get_images()
+        if any(v is None for v in images.values()):
+            raise RuntimeError(
+                "One or more camera images are unavailable; cannot record frame.")
+        obs.update({f"observation.images.{k}": v for k, v in images.items()})
     return obs
 
 
@@ -141,17 +145,24 @@ def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -
     target_pose = arm.end_effector(joint_angles=gello_joints)
     stiffness_diag = arm.current_stiffness
     delta_translation = target_pose[:3] - current_pose[:3]
-    delta_rotation = transformations.quaternions_orientation_error(target_pose[3:], current_pose[3:])
+    delta_rotation = transformations.quaternions_orientation_error(
+        target_pose[3:], current_pose[3:])
 
     max_delta_rotation = np.deg2rad(safety_cfg.max_delta_rotation)
-    clipped_delta_translation = np.clip(delta_translation, -safety_cfg.max_delta_translation, safety_cfg.max_delta_translation)
-    clipped_delta_orientation = np.clip(delta_rotation, -max_delta_rotation, max_delta_rotation)
+    clipped_delta_translation = np.clip(
+        delta_translation, -safety_cfg.max_delta_translation, safety_cfg.max_delta_translation)
+    clipped_delta_orientation = np.clip(
+        delta_rotation, -max_delta_rotation, max_delta_rotation)
 
     next_position = current_pose[:3] + clipped_delta_translation
-    next_position[0] = np.clip(next_position[0], safety_cfg.workspace_range.x[0], safety_cfg.workspace_range.x[1])
-    next_position[1] = np.clip(next_position[1], safety_cfg.workspace_range.y[0], safety_cfg.workspace_range.y[1])
-    next_position[2] = np.clip(next_position[2], safety_cfg.workspace_range.z[0], safety_cfg.workspace_range.z[1])
-    next_orientation = transformations.rotate_quaternion_by_rpy(*clipped_delta_orientation, current_pose[3:])
+    next_position[0] = np.clip(
+        next_position[0], safety_cfg.workspace_range.x[0], safety_cfg.workspace_range.x[1])
+    next_position[1] = np.clip(
+        next_position[1], safety_cfg.workspace_range.y[0], safety_cfg.workspace_range.y[1])
+    next_position[2] = np.clip(
+        next_position[2], safety_cfg.workspace_range.z[0], safety_cfg.workspace_range.z[1])
+    next_orientation = transformations.rotate_quaternion_by_rpy(
+        *clipped_delta_orientation, current_pose[3:])
     next_target = np.concatenate([next_position, next_orientation])
 
     arm.set_cartesian_target_pose(pose=next_target)
@@ -213,7 +224,8 @@ def record_episode(
             force_norm = np.linalg.norm(arm.get_wrench())
             torque_norm = np.linalg.norm(arm.get_wrench()[3:])
             if force_norm > safety_cfg.max_force_torque[0] or torque_norm > safety_cfg.max_force_torque[1]:
-                log.warning("Force/torque norm is too high: %.2f/%.2f", force_norm, torque_norm)
+                log.warning("Force/torque norm is too high: %.2f/%.2f",
+                            force_norm, torque_norm)
                 events["exit_early"] = True
                 events["rerecord"] = True
                 break
@@ -223,14 +235,16 @@ def record_episode(
             all_values = {}
             all_values.update(get_observations(arm, image_recorder))
             all_values.update(set_action(arm, gello, safety_cfg))
-            all_values = {k: v.astype(np.float32) for k, v in all_values.items()}
+            all_values = {k: np.asarray(v).astype(np.float32)
+                          for k, v in all_values.items()}
 
             dataset.add_frame({**all_values, "task": ds_cfg.task})
 
             elapsed = time.perf_counter() - loop_start
             sleep_time = dt - elapsed
             if sleep_time < 0:
-                log.warning("Loop running slow: %.1f Hz (target %d Hz)", 1.0 / elapsed, ds_cfg.fps)
+                log.warning("Loop running slow: %.1f Hz (target %d Hz)",
+                            1.0 / elapsed, ds_cfg.fps)
             else:
                 rospy.sleep(sleep_time)
 
@@ -248,7 +262,8 @@ def wait_for_reset(reset_time_s: float, events: dict) -> None:
             events["exit_early"] = False
             break
         remaining = reset_time_s - (time.perf_counter() - start)
-        print(f"\r  Reset: {remaining:.0f}s remaining (Enter to skip)  ", end="", flush=True)
+        print(
+            f"\r  Reset: {remaining:.0f}s remaining (Enter to skip)  ", end="", flush=True)
         rospy.sleep(0.5)
     print()
 
@@ -267,7 +282,7 @@ def wait_for_keypress_reset(events: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-@hydra.main(config_path="../../config/hydra",
+@hydra.main(config_path="../config/hydra",
             config_name="test_task",
             version_base=None)
 def main(cfg: DictConfig) -> None:
@@ -275,7 +290,8 @@ def main(cfg: DictConfig) -> None:
     ds_cfg = cfg.dataset
     controller_cfg = cfg.controller
     features = build_features(ds_cfg)
-    num_camera_threads = ds_cfg.image_writer.threads_per_camera * len(ds_cfg.cameras)
+    num_camera_threads = ds_cfg.image_writer.threads_per_camera * \
+        len(ds_cfg.cameras)
     repo_id = ds_cfg.repo_id[0]
     dataset_dir = Path(ds_cfg.dir) / repo_id
 
@@ -285,15 +301,19 @@ def main(cfg: DictConfig) -> None:
     log.setLevel(logging.INFO)
     log.propagate = False
     if not any(isinstance(h, RichHandler) for h in log.handlers):
-        log.addHandler(RichHandler(console=console, show_time=True, show_path=False, markup=True))
+        log.addHandler(RichHandler(console=console,
+                       show_time=True, show_path=False, markup=True))
 
     log.info("Initializing hardware...")
     gello = Gello()
     arm = CompliantController(gripper_type=None)
     arm.set_control_mode(controller_cfg.mode)
-    arm.update_pd_gains(OmegaConf.to_container(controller_cfg.p_gains), OmegaConf.to_container(controller_cfg.d_gains))
-    arm.update_selection_matrix(OmegaConf.to_container(controller_cfg.selection_matrix))
-    arm.set_solver_parameters(error_scale=controller_cfg.error_scale, iterations=controller_cfg.iterations, publish_state_feedback=True)
+    arm.update_pd_gains(OmegaConf.to_container(
+        controller_cfg.p_gains), OmegaConf.to_container(controller_cfg.d_gains))
+    arm.update_selection_matrix(
+        OmegaConf.to_container(controller_cfg.selection_matrix))
+    arm.set_solver_parameters(error_scale=controller_cfg.error_scale,
+                              iterations=controller_cfg.iterations, publish_state_feedback=True)
     arm.update_stiffness(controller_cfg.stiffness * np.ones(6))
     arm.current_stiffness = np.array(controller_cfg.stiffness * np.ones(6))
     arm.auto_switch_controllers = False
@@ -306,12 +326,30 @@ def main(cfg: DictConfig) -> None:
         else None
     )
 
-    if ds_cfg.overwrite or not dataset_dir.exists():
-        if dataset_dir.exists() and dataset_dir.is_dir():
-            confirm = input(f"Dataset directory {dataset_dir} already exists. Overwrite? (y/n): ")
-            if confirm.strip().lower() != "y":
-                log.info("Exiting...")
+    if image_recorder is not None:
+        log.info("Waiting for cameras...")
+        deadline = time.perf_counter() + 10.0
+        while not image_recorder.cameras_ready() and not rospy.is_shutdown():
+            if time.perf_counter() > deadline:
+                log.error(
+                    "Timed out waiting for camera images. Check that camera topics are publishing.")
                 sys.exit(1)
+            rospy.sleep(0.1)
+        log.info("All cameras ready.")
+
+    meta_complete = (dataset_dir / "meta" / "tasks.parquet").exists()
+
+    if ds_cfg.overwrite or not dataset_dir.exists() or not meta_complete:
+        if dataset_dir.exists() and dataset_dir.is_dir():
+            if not meta_complete:
+                log.warning(
+                    "Incomplete dataset found at %s, recreating.", dataset_dir)
+            else:
+                confirm = input(
+                    f"Dataset directory {dataset_dir} already exists. Overwrite? (y/n): ")
+                if confirm.strip().lower() != "y":
+                    log.info("Exiting...")
+                    sys.exit(1)
             shutil.rmtree(dataset_dir)
 
         log.info("Creating dataset: %s", repo_id)
@@ -367,14 +405,16 @@ def main(cfg: DictConfig) -> None:
 
             dataset.save_episode()
             recorded += 1
-            log.info("Saved episode %d (%d total in dataset)", recorded, dataset.num_episodes)
+            log.info("Saved episode %d (%d total in dataset)",
+                     recorded, dataset.num_episodes)
 
             if recorded < ds_cfg.num_episodes and not events["stop"]:
                 wait_for_keypress_reset(events)
     finally:
         log.info("Finalizing dataset...")
         dataset.finalize()
-        log.info("Done. %d episodes saved to %s", dataset.num_episodes, dataset.root)
+        log.info("Done. %d episodes saved to %s",
+                 dataset.num_episodes, dataset.root)
 
 
 if __name__ == "__main__":

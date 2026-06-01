@@ -41,15 +41,22 @@ class ImageRecorder:
     def get_images(self):
         image_dict = dict()
         for cam_name in self.camera_names:
-            if hasattr(self, f'{cam_name}_timestamp') and rospy.get_time() - getattr(self, f'{cam_name}_timestamp') > 0.5:
+            image = getattr(self, f'{cam_name}_image')
+            if image is None:
+                rospy.logerr_throttle(1, f"No image received yet for {cam_name}")
+                image_dict[cam_name] = None
+            elif hasattr(self, f'{cam_name}_timestamp') and rospy.get_time() - getattr(self, f'{cam_name}_timestamp') > 0.5:
                 rospy.logerr_throttle(1, "Image is too old! ignoring")
                 image_dict[cam_name] = None
             else:
-                image = getattr(self, f'{cam_name}_image')
                 if self.data_type == 'float32':
                     image = (image/255.0).astype(np.float32)
                 image_dict[cam_name] = image
         return image_dict
+
+    def cameras_ready(self):
+        """Return True once all cameras have received at least one frame."""
+        return all(getattr(self, f'{cam_name}_image') is not None for cam_name in self.camera_names)
 
     def print_diagnostics(self):
         def dt_helper(l):
