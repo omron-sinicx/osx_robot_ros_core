@@ -1,6 +1,6 @@
 # ================== Dataset Configuration ==================
 dataset:
-  repo_id: test_wipe_osx
+  repo_id: random_test
   task: "Pick and place the object"
   root: /root/osx-ur/dependencies/comet/data # null = lerobot default (~/.cache/huggingface/lerobot)
   overwrite: false

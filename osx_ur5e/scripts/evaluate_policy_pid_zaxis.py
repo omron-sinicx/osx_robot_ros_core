@@ -367,20 +367,15 @@ def factored_to_controller(
     Returns a dict with ``action.position`` (3,), ``action.orientation`` (4,),
     and ``action.stiffness_diag`` (6,).
     """
-    fvt = process_factored_action_dict(
+    return process_factored_action_dict(
         env_action,
         default_stiffness=default_stiffness,
         default_stiffness_rot=default_stiffness_rot,
         characteristic_length=characteristic_length,
         use_isotropic_stiffness=False,
-        controller_type="variable_kp",
         orientation_representation="quaternion",
+        full_stiffness_matrix=True,
     )
-    return {
-        "action.position": fvt[0:3],
-        "action.orientation": fvt[3:7],
-        "action.stiffness_diag": fvt[7:13],
-    }
 
 
 # ---------------------------------------------------------------------------

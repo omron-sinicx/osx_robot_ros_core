@@ -271,7 +271,7 @@ def wait_for_keypress_reset(events: dict) -> None:
 # ---------------------------------------------------------------------------
 
 @hydra.main(config_path="/root/osx-ur/dependencies/comet/configs",
-            config_name="blackboard_wipe",
+            config_name="blank",
             version_base=None)
 def main(cfg: DictConfig) -> None:
 
