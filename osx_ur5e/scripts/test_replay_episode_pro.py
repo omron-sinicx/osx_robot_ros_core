@@ -23,6 +23,7 @@ Usage:
     python test_replay_episode_pro.py +eval.comparison=true dataset.dataset.episode_idx=2 +eval.num_episodes=3
 """
 
+import json
 import logging
 import signal
 import sys
@@ -50,6 +51,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from osx_ur5e.fdcc_env import FDCCEnv
 from ur_control import transformations
+from robosuite.utils.transform_utils import quat2mat, ortho62quat
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -170,7 +172,7 @@ def replay_single_episode(
     torque_norm = np.zeros(ep_len)
     stiffness = np.zeros(ep_len) if include_stiffness else None
 
-    env.reset(move_robot=True)
+    env.reset(move_robot=False)
 
     frame = dataset[ep_start]
     logger.info("Moving to episode start qpos...")
@@ -237,36 +239,83 @@ def extract_dataset_ground_truth(
     episode_idx: int,
     include_stiffness: bool,
     stiffness_key: str | None,
+    ft_in_tool_frame: bool = True,
 ) -> dict:
-    """Pull EEF positions, force norms, and stiffness from the dataset for one episode."""
+    """Pull EEF positions, force norms, stiffness and the quantities needed for
+    the sensor-vs-implied-spring consistency check from the dataset for one episode."""
     ep = dataset.meta.episodes[episode_idx]
     ep_start = int(ep["dataset_from_index"])
     ep_end = int(ep["dataset_to_index"])
     ep_len = ep_end - ep_start
 
     eef_pos = np.zeros((ep_len, 3))
+    action_pos = np.zeros((ep_len, 3))
+    obs_rot6 = np.zeros((ep_len, 6))
+    ft_tool = np.zeros((ep_len, 6))
+    k_demo = np.zeros((ep_len, 3))   # translational stiffness diag per step
     force_norm = np.zeros(ep_len)
     torque_norm = np.zeros(ep_len)
     stiffness = np.zeros(ep_len) if include_stiffness else None
+
+    def _np(x):
+        return (x.cpu().numpy() if isinstance(x, torch.Tensor) else np.array(x)).flatten()
 
     for i, t in enumerate(range(ep_start, ep_end)):
         frame = dataset[t]
 
         if "observation.eef.position" in frame:
-            ds_pos = frame["observation.eef.position"]
-            eef_pos[i] = (ds_pos.cpu().numpy() if isinstance(ds_pos, torch.Tensor) else np.array(ds_pos)).flatten()
+            eef_pos[i] = _np(frame["observation.eef.position"])
+        if "observation.eef.rotation_ortho6" in frame:
+            obs_rot6[i] = _np(frame["observation.eef.rotation_ortho6"])
+        if "action.position" in frame:
+            action_pos[i] = _np(frame["action.position"])
+        if "action.stiffness_diag" in frame:
+            sd = _np(frame["action.stiffness_diag"])
+            if sd.size >= 3:
+                k_demo[i] = sd[:3]
 
         if "observation.ft" in frame:
-            ds_ft = frame["observation.ft"]
-            ds_ft_np = (ds_ft.cpu().numpy() if isinstance(ds_ft, torch.Tensor) else np.array(ds_ft)).flatten()
-            force_norm[i] = np.linalg.norm(ds_ft_np[:3])
-            torque_norm[i] = np.linalg.norm(ds_ft_np[3:])
+            ft = _np(frame["observation.ft"])
+            ft_tool[i, :ft.size] = ft[:6] if ft.size >= 6 else ft
+            force_norm[i] = np.linalg.norm(ft_tool[i, :3])
+            torque_norm[i] = np.linalg.norm(ft_tool[i, 3:])
 
         if include_stiffness and stiffness_key and stiffness_key in frame:
-            sv = frame[stiffness_key]
-            stiffness[i] = float(np.mean(sv.cpu().numpy() if isinstance(sv, torch.Tensor) else sv))
+            sv = _np(frame[stiffness_key])
+            stiffness[i] = float(np.mean(sv))
 
-    return dict(eef_pos=eef_pos, force_norm=force_norm, torque_norm=torque_norm, stiffness=stiffness)
+    # ── Derived: implied spring force (controller side) and sensor force (world) ──
+    # Spring force the demo controller was driving with, in world frame:
+    #   F_spring = K_demo * (action.position - obs.eef.position)
+    F_spring_world = k_demo * (action_pos - eef_pos)
+
+    # Sensor force expressed in world frame (sign-flipped to get force ON env):
+    F_exerted_world = np.zeros_like(F_spring_world)
+    for i in range(ep_len):
+        f_tool = ft_tool[i, :3]
+        if ft_in_tool_frame and np.linalg.norm(obs_rot6[i]) > 0:
+            R = quat2mat(ortho62quat(obs_rot6[i]))
+            f_world = R @ f_tool
+        else:
+            f_world = f_tool
+        F_exerted_world[i] = -f_world
+
+    # Residual: the part of the sensor reading NOT explained by the spring
+    delta_tr_world = F_spring_world - F_exerted_world
+
+    return dict(
+        eef_pos=eef_pos,
+        force_norm=force_norm,
+        torque_norm=torque_norm,
+        stiffness=stiffness,
+        # new fields for Plot A
+        action_pos=action_pos,
+        k_demo=k_demo,
+        ft_tool=ft_tool,
+        F_spring_world=F_spring_world,
+        F_exerted_world=F_exerted_world,
+        delta_tr_world=delta_tr_world,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +326,142 @@ _REPLAY_STYLES = [
     dict(color_set=["tab:blue", "tab:orange", "tab:green"], force_color="tab:red",    stiff_color="tab:green",  alpha=1.0),
     dict(color_set=["#1f77b4",  "#ff7f0e",    "#2ca02c"],   force_color="tab:purple", stiff_color="tab:purple", alpha=0.65),
 ]
+
+
+def plot_sensor_vs_spring(
+    episode_idx: int,
+    dataset_gt: dict,
+    save_path: Path,
+    contact_threshold_N: float = 2.0,
+) -> None:
+    """Plot A — sensor force vs. implied controller spring force, from the dataset.
+
+    Produces four panels:
+      1) |F_sensor|, |F_spring|, |delta_tr| vs time, with contact shading.
+      2) Per-axis F_sensor[i] (solid) vs F_spring[i] (dashed) in world frame.
+      3) Scatter |F_spring| vs |F_sensor| coloured by contact / no-contact.
+      4) Phase portrait |action - obs| vs |F_sensor| (slope ≈ 1/K_demo at SS).
+    """
+    F_s = dataset_gt["F_exerted_world"]
+    F_k = dataset_gt["F_spring_world"]
+    d = dataset_gt["delta_tr_world"]
+    Fs_norm = np.linalg.norm(F_s, axis=1)
+    Fk_norm = np.linalg.norm(F_k, axis=1)
+    d_norm = np.linalg.norm(d, axis=1)
+    in_contact = Fs_norm > contact_threshold_N
+
+    ds_eef = dataset_gt["eef_pos"]
+    action_pos = dataset_gt["action_pos"]
+    disp_norm = np.linalg.norm(action_pos - ds_eef, axis=1)
+    if in_contact.any():
+        k_demo0 = float(np.median(dataset_gt["k_demo"][in_contact, 0]))
+    else:
+        k_demo0 = float(np.median(dataset_gt["k_demo"][:, 0])) if dataset_gt["k_demo"].size else 800.0
+    if not np.isfinite(k_demo0) or k_demo0 <= 0:
+        k_demo0 = 800.0
+
+    steps = np.arange(len(Fs_norm))
+    fig = plt.figure(figsize=(14, 14))
+    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.45, wspace=0.30,
+                           height_ratios=[1.0, 1.0, 1.2, 0.8])
+
+    # ── Panel 1: norms vs time ──
+    ax1 = fig.add_subplot(gs[0, :])
+    y_top = max(Fs_norm.max(), Fk_norm.max(), 1.0) * 1.05
+    ax1.fill_between(steps, 0, y_top, where=in_contact, color="tab:grey", alpha=0.08,
+                     step="mid", label=f"contact (|F_s|>{contact_threshold_N:.1f}N)")
+    ax1.plot(steps, Fs_norm, label="|F_sensor| (= -R·ft, world)", color="tab:blue", linewidth=0.9)
+    ax1.plot(steps, Fk_norm, label="|F_spring| = |K_demo·(action - obs)|",
+             color="tab:orange", linewidth=0.9)
+    ax1.plot(steps, d_norm,  label="|F_spring - F_sensor|  (Δ_tr)",
+             color="tab:red", linewidth=0.9, alpha=0.85)
+    ax1.set_ylim(0, y_top)
+    ax1.set_title(f"Episode {episode_idx} — sensor vs implied-spring force (dataset only)")
+    ax1.set_ylabel("Force (N)")
+    ax1.set_xlabel("Timestep")
+    ax1.legend(fontsize=8, ncol=2, loc="upper right")
+    ax1.grid(True, linewidth=0.4)
+
+    # ── Panel 2: per-axis time series ──
+    ax2 = fig.add_subplot(gs[1, :])
+    colours = ["tab:blue", "tab:orange", "tab:green"]
+    for i, lbl in enumerate(["X", "Y", "Z"]):
+        ax2.plot(steps, F_s[:, i], color=colours[i], linewidth=0.8, label=f"F_sensor {lbl}")
+        ax2.plot(steps, F_k[:, i], color=colours[i], linewidth=0.8, linestyle="--",
+                 alpha=0.7, label=f"F_spring {lbl}")
+    ax2.axhline(0, color="black", linewidth=0.4, linestyle=":")
+    ax2.set_title("Per-axis (world frame): sensor (solid) vs implied spring (dashed)")
+    ax2.set_ylabel("Force (N)")
+    ax2.set_xlabel("Timestep")
+    ax2.legend(fontsize=7, ncol=3)
+    ax2.grid(True, linewidth=0.4)
+
+    # ── Panel 3: scatter |F_spring| vs |F_sensor| ──
+    ax3 = fig.add_subplot(gs[2, 0])
+    if (~in_contact).any():
+        ax3.scatter(Fs_norm[~in_contact], Fk_norm[~in_contact], s=4, alpha=0.35,
+                    color="tab:grey", label="no contact")
+    if in_contact.any():
+        ax3.scatter(Fs_norm[in_contact],  Fk_norm[in_contact],  s=4, alpha=0.55,
+                    color="tab:purple", label="contact")
+    lim = max(Fs_norm.max(), Fk_norm.max(), 1.0) * 1.05
+    ax3.plot([0, lim], [0, lim], color="black", linewidth=0.6, linestyle=":", label="y=x")
+    ax3.set_xlim(0, lim)
+    ax3.set_ylim(0, lim)
+    ax3.set_aspect("equal", adjustable="box")
+    ax3.set_xlabel("|F_sensor| (N)")
+    ax3.set_ylabel("|F_spring| (N)")
+    ax3.set_title("|F_spring| vs |F_sensor|  (y=x ⇒ quasi-static)")
+    ax3.legend(fontsize=7, loc="upper left")
+    ax3.grid(True, linewidth=0.4)
+
+    # ── Panel 4: phase portrait |action - obs| vs |F_sensor| ──
+    ax4 = fig.add_subplot(gs[2, 1])
+    if (~in_contact).any():
+        ax4.scatter(Fs_norm[~in_contact], disp_norm[~in_contact], s=4, alpha=0.35,
+                    color="tab:grey", label="no contact")
+    if in_contact.any():
+        ax4.scatter(Fs_norm[in_contact],  disp_norm[in_contact],  s=4, alpha=0.55,
+                    color="tab:purple", label="contact")
+    F_line = np.linspace(0, max(Fs_norm.max(), 1.0) * 1.05, 50)
+    ax4.plot(F_line, F_line / k_demo0, color="black", linewidth=0.6, linestyle=":",
+             label=f"slope 1/K_demo (K≈{k_demo0:.0f} N/m)")
+    ax4.set_xlabel("|F_sensor| (N)")
+    ax4.set_ylabel("|action.position - obs.position| (m)")
+    ax4.set_title("Phase portrait: displacement vs sensor force")
+    ax4.legend(fontsize=7, loc="upper left")
+    ax4.grid(True, linewidth=0.4)
+
+    # ── Panel 5: Δ_tr statistics summary text ──
+    ax5 = fig.add_subplot(gs[3, :])
+    ax5.axis("off")
+    if in_contact.any():
+        rms = float(np.sqrt(np.mean(d_norm[in_contact] ** 2)))
+        txt = (
+            f"Contact-phase statistics (frames with |F_sensor|>{contact_threshold_N} N, "
+            f"n={int(in_contact.sum())})\n"
+            f"  mean |F_sensor|  = {Fs_norm[in_contact].mean():6.2f} N\n"
+            f"  mean |F_spring|  = {Fk_norm[in_contact].mean():6.2f} N\n"
+            f"  mean |Δ_tr|      = {d_norm[in_contact].mean():6.2f} N    (RMS = {rms:6.2f} N)\n"
+            f"  max  |Δ_tr|      = {d_norm[in_contact].max():6.2f} N\n"
+            f"  median K_demo[x] = {k_demo0:6.1f} N/m\n"
+            "\n"
+            "Interpretation:\n"
+            "  - Small |Δ_tr| in contact => quasi-static demo; F_sensor/K_e encoding is K_e-invariant.\n"
+            "  - Sustained |F_spring| > |F_sensor| => demo controller was driving harder than\n"
+            "    the sensor saw; that gap is re-scaled by K_demo/K_e at replay time and produces\n"
+            "    the asymmetric over/undershoot."
+        )
+    else:
+        txt = "No contact frames detected (|F_sensor| never exceeded threshold)."
+    ax5.text(0.01, 0.98, txt, va="top", ha="left", family="monospace", fontsize=9)
+
+    fig.suptitle(f"Plot A — sensor vs implied-spring consistency (ep {episode_idx})",
+                 fontsize=11)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    logger.info(f"Plot A saved to: {save_path}")
+    plt.close(fig)
 
 
 def plot_episode_comparison(
@@ -354,11 +539,12 @@ def plot_episode_comparison(
 
     # ── Row 2 left: Force norm comparison ──
     ax_fn = fig.add_subplot(gs[2, 0])
+    fd_colors = ["tab:blue", "tab:orange"]
     ax_fn.plot(ds_steps, ds_force, color="tab:grey", linestyle="--", linewidth=0.8, label="dataset")
     for ridx, replay in enumerate(replays):
         style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
         steps = np.arange(len(replay.force_norm))
-        ax_fn.plot(steps, replay.force_norm, color=style["force_color"], linewidth=0.8,
+        ax_fn.plot(steps, replay.force_norm, color=fd_colors[ridx % len(fd_colors)], linewidth=0.8,
                    alpha=style["alpha"], label=replay.action_type)
     ax_fn.set_title("Force norm (N)")
     ax_fn.set_ylabel("||F|| (N)")
@@ -368,7 +554,6 @@ def plot_episode_comparison(
 
     # ── Row 2 right: Force difference (replay − dataset) ──
     ax_fd = fig.add_subplot(gs[2, 1])
-    fd_colors = ["tab:cyan", "tab:pink"]
     for ridx, replay in enumerate(replays):
         T = min(len(replay.force_norm), len(ds_force))
         force_diff = replay.force_norm[:T] - ds_force[:T]
@@ -384,10 +569,11 @@ def plot_episode_comparison(
     # ── Row 3 left: Torque norm comparison ──
     ax_tn = fig.add_subplot(gs[3, 0])
     ax_tn.plot(ds_steps, ds_torque, color="tab:grey", linestyle="--", linewidth=0.8, label="dataset")
+    td_colors = ["tab:blue", "tab:orange"]
     for ridx, replay in enumerate(replays):
         style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
         steps = np.arange(len(replay.torque_norm))
-        color = style.get("torque_color", "tab:green")
+        color = td_colors[ridx % len(td_colors)]
         ax_tn.plot(steps, replay.torque_norm, color=color, linewidth=0.8,
                    alpha=style["alpha"], label=replay.action_type)
     ax_tn.set_title("Torque norm (Nm)")
@@ -398,7 +584,6 @@ def plot_episode_comparison(
 
     # ── Row 3 right: Torque difference (replay − dataset) ──
     ax_td = fig.add_subplot(gs[3, 1])
-    td_colors = ["tab:blue", "tab:orange"]
     for ridx, replay in enumerate(replays):
         T = min(len(replay.torque_norm), len(ds_torque))
         torque_diff = replay.torque_norm[:T] - ds_torque[:T]
@@ -492,6 +677,11 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Loading dataset: {repo_id} from {dataset_root}")
     dataset = LeRobotDataset(repo_id, root=dataset_root, video_backend="pyav", use_videos=False)
 
+    info_path = output_dir / "dataset_info.json"
+    with open(info_path, "w") as f:
+        json.dump(dataset.meta.info, f, indent=2)
+    logger.info(f"Saved dataset.meta.info to {info_path}")
+
     fps = cfg.dataset.dataset.fps
 
     start_episode = int(cfg.dataset.dataset.episode_idx)
@@ -508,6 +698,7 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Primary action type: {primary_action_type} | keys: {primary_keys}")
 
     comparison_action_type = "raw_actions"
+    # comparison_action_type = "virtual_target_actions"
     if comparison:
         comparison_keys = _action_keys_for(cfg, comparison_action_type)
         comparison_has_stiffness = any("stiffness" in k for k in comparison_keys)
@@ -533,7 +724,7 @@ def main(cfg: DictConfig) -> None:
     env.reference_trajectory = []
 
     logger.info(f"actions_as_deltas: {env.actions_as_deltas}")
-    comparison = False  # FIXME
+    # comparison = False  # FIXME
     logger.info(f"comparison mode: {comparison}")
 
     # ------------------------------------------------------------------
@@ -543,13 +734,23 @@ def main(cfg: DictConfig) -> None:
 
     move_to_init_qpos(env, reason="initial safe position")
 
+    ft_in_tool_frame = bool(
+        dataset.meta.info.get("virtual_target_displacement_config", {})
+        .get("ft_in_tool_frame", True)
+    )
+    logger.info(f"ft_in_tool_frame (from dataset info): {ft_in_tool_frame}")
+
     for episode_idx in range(start_episode, end_episode):
         ep = dataset.meta.episodes[episode_idx]
         ep_len = int(ep["dataset_to_index"]) - int(ep["dataset_from_index"])
         logger.info(f"Episode {episode_idx}: {ep_len} steps")
 
         # -- Collect dataset ground truth --
-        ds_gt = extract_dataset_ground_truth(dataset, episode_idx, include_stiffness, stiffness_key="action.stiffness_diag")
+        ds_gt = extract_dataset_ground_truth(
+            dataset, episode_idx, include_stiffness,
+            stiffness_key="action.stiffness_diag",
+            ft_in_tool_frame=ft_in_tool_frame,
+        )
 
         # -- Run primary replay --
         logger.info(f"Running primary replay: {primary_action_type}")
@@ -562,7 +763,7 @@ def main(cfg: DictConfig) -> None:
         )
         replays = [primary_result]
 
-        move_to_init_qpos(env, reason=f"after {primary_action_type} ep {episode_idx}")
+        # move_to_init_qpos(env, reason=f"after {primary_action_type} ep {episode_idx}")
 
         # -- Run comparison replay (if enabled) --
         if comparison:
@@ -576,7 +777,7 @@ def main(cfg: DictConfig) -> None:
             )
             replays.append(comparison_result)
 
-            move_to_init_qpos(env, reason=f"after {comparison_action_type} ep {episode_idx}")
+            # move_to_init_qpos(env, reason=f"after {comparison_action_type} ep {episode_idx}")
 
         # -- Summaries --
         for replay in replays:
@@ -590,6 +791,9 @@ def main(cfg: DictConfig) -> None:
             np.save(output_dir / f"ep{episode_idx}_{tag}_force_norm.npy", replay.force_norm)
         np.save(output_dir / f"ep{episode_idx}_dataset_eef_pos.npy", ds_gt["eef_pos"])
         np.save(output_dir / f"ep{episode_idx}_dataset_force_norm.npy", ds_gt["force_norm"])
+        np.save(output_dir / f"ep{episode_idx}_dataset_F_sensor_world.npy", ds_gt["F_exerted_world"])
+        np.save(output_dir / f"ep{episode_idx}_dataset_F_spring_world.npy", ds_gt["F_spring_world"])
+        np.save(output_dir / f"ep{episode_idx}_dataset_delta_tr.npy",       ds_gt["delta_tr_world"])
 
         # -- Plot --
         plot_episode_comparison(
@@ -598,11 +802,16 @@ def main(cfg: DictConfig) -> None:
             replays=replays,
             save_path=output_dir / f"ep{episode_idx}_comparison.png",
         )
+        plot_sensor_vs_spring(
+            episode_idx=episode_idx,
+            dataset_gt=ds_gt,
+            save_path=output_dir / f"ep{episode_idx}_sensor_vs_spring.png",
+        )
 
     # ------------------------------------------------------------------
     # Return to safe position
     # ------------------------------------------------------------------
-    move_to_init_qpos(env, reason="all episodes finished")
+    # move_to_init_qpos(env, reason="all episodes finished")
 
     # ------------------------------------------------------------------
     # Overall summary
