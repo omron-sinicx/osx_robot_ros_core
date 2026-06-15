@@ -1,48 +1,13 @@
-cmake_minimum_required(VERSION 3.1.3)
+cmake_minimum_required(VERSION 3.8)
 project(osx_msgs)
 
-find_package(catkin REQUIRED COMPONENTS
-    message_generation
-    cmake_modules
-    geometry_msgs
-    std_srvs
-    std_msgs
-    sensor_msgs
-    visualization_msgs
-    actionlib_msgs
-    moveit_msgs
+find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+# Slimmed for the ROS 2 migration: only RobotStatus remains (vision interfaces were
+# dropped). RobotStatus uses primitive fields only, so there are no interface deps.
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/RobotStatus.msg"
 )
 
-# Declare the message files to be built
-add_message_files(DIRECTORY msg)
-
-add_service_files(DIRECTORY srv)
-
-# Generate actions in the 'action' folder
-add_action_files(DIRECTORY action)
-add_action_files(DIRECTORY action/vision)
-
-# # Generate added messages and services with any dependencies listed here
-
-# Actually generate the language-specific message and service files
-generate_messages(
-  DEPENDENCIES
-  std_srvs
-  std_msgs
-  sensor_msgs
-  geometry_msgs
-  visualization_msgs
-  actionlib_msgs
-  moveit_msgs
-)
-
-
-catkin_package(CATKIN_DEPENDS
-  message_runtime
-  std_msgs
-  sensor_msgs
-  geometry_msgs
-  visualization_msgs
-  actionlib_msgs
-  moveit_msgs
-)
+ament_package()

@@ -1,1 +1,0 @@
-float64 support_surface  # The z-coordinate of the support surface in the world coordinate frame
