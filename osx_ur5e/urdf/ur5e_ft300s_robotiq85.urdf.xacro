@@ -29,7 +29,7 @@
   <xacro:include filename="$(find robotiq_description)/urdf/robotiq_85_gripper.urdf.xacro"/>
 
   <!-- Include official ros-industrial Robotiq FT300 macro (sensor + mounting plate) -->
-  <xacro:include filename="$(find robotiq_ft_sensor)/urdf/robotiq_ft300.urdf.xacro"/>
+  <xacro:include filename="$(find robotiq_ft_sensor)/urdf/robotiq_ft300s.urdf.xacro"/>
 
   <!-- Instantiate UR5e -->
   <xacro:ur5e_robot prefix=""
@@ -42,20 +42,40 @@
     safety_pos_margin="$(arg safety_pos_margin)"
     safety_k_position="$(arg safety_k_position)"/>
 
-  <!-- Attach Robotiq FT300-S (mounting plate + sensor) to the UR flange (tool0).
-       The official macro builds along +Z, and tool0 Z points forward, so an
-       identity origin mounts the plate flush on the flange. The assembly tool
-       face ends up at tool0 Z = 0.0415 m (13 mm plate + sensor body). -->
-  <xacro:robotiq_ft300 prefix="" parent="tool0">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </xacro:robotiq_ft300>
+  <!-- Attach Robotiq FT300-S to the UR flange (tool0) -->
+  <xacro:robotiq_ft300s prefix="" parent="tool0">
+    <origin xyz="0 0 0.0375" rpy="0 ${pi} 0"/>
+  </xacro:robotiq_ft300s>
 
-  <!-- Attach Robotiq 2F-85 to the FT300-S tool face.
-       ft300_mounting_plate shares tool0's orientation, so place the gripper
-       0.0415 m forward (tool0 Z) and reuse the orientation that maps the
-       gripper X axis to the forward direction. -->
-  <xacro:robotiq_85_gripper prefix="" parent="ft300_mounting_plate">
-    <origin xyz="0 0 0.0415" rpy="0 ${-pi/2} ${pi/2}"/>
+  <!-- Coupling plate between FT300-S and 2F-85.
+       ft300s_sensor frame is flipped (rpy=0,pi,0), so +Z in sensor frame
+       points toward tool0. Child offsets use negative Z to go forward. -->
+  <joint name="coupling_fix" type="fixed">
+    <origin xyz="0 0 0" rpy="0 ${-pi} 0"/>
+    <parent link="ft300s_sensor"/>
+    <child link="coupling_link"/>
+  </joint>
+  <link name="coupling_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://robotiq_ft_sensor/meshes/visual/coupling_grp_es_cpl_062.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Robotiq-Grey">
+        <color rgba="0.4 0.4 0.4 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://robotiq_ft_sensor/meshes/collision/coupling_grp_es_cpl_062.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Attach Robotiq 2F-85 to coupling plate -->
+  <xacro:robotiq_85_gripper prefix="" parent="coupling_link">
+    <origin xyz="0 0 0.011" rpy="0 ${-pi/2} ${pi/2}"/>
   </xacro:robotiq_85_gripper>
 
   <!-- TCP: gripper tip link. 169.9 mm = measured tool0→tip (211.4 mm) minus

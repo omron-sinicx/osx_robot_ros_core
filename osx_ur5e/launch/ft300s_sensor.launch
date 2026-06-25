@@ -13,11 +13,21 @@
 
   <arg name="serial_id" default="ttyUSB1"
        doc="FTDI tty of the RS-485 converter (idProduct 6015 / 'USB TO RS-485')."/>
-  <arg name="frame_id"  default="robotiq_ft_frame_id"/>
+  <arg name="frame_id"  default="ft300s_measurement"/>
+  <arg name="delay_sec" default="0.015"
+       doc="USB-PC vs RTDE delay measured by measure_ft_delay.py (FT lags by ~15 ms)."/>
 
   <node name="robotiq_ft_sensor" pkg="robotiq_ft_sensor" type="rq_sensor" output="screen"
         launch-prefix="bash -c 'echo 1 &gt; /sys/bus/usb-serial/devices/$(arg serial_id)/latency_timer; exec &quot;$@&quot;' _">
     <param name="serial_id" value="$(arg serial_id)"/>
     <param name="frame_id"  value="$(arg frame_id)"/>
+  </node>
+
+  <!-- Timeshift republisher: /robotiq_ft_wrench → /robotiq_ft_wrench_synced
+       (stamp -= delay_sec). Required for message_filters ApproximateTime
+       sync against RTDE-clocked /joint_states (slop ~10 ms). -->
+  <node name="ft300_timeshift_republisher" pkg="osx_ur5e"
+        type="ft300_timeshift_republisher.py" output="screen">
+    <param name="delay_sec" value="$(arg delay_sec)"/>
   </node>
 </launch>
