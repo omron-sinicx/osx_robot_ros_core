@@ -33,7 +33,7 @@ class FDCCEnv(BaseEnv):
         super().load_params(config)
 
         # Parameters
-        self.control_frequency = config.dataset.dataset.fps
+        self.control_frequency = config.policy.fps
         self.dt = 1. / self.control_frequency
 
         self.cam_names = config.dataset.cameras.keys()
