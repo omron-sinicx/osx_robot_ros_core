@@ -14,6 +14,7 @@ Usage:
 
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
+    q      - stop current rollout and end evaluation
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from torchvision import transforms
+from pynput import keyboard as kb
 from tqdm import tqdm
 from ur_control import transformations
 
@@ -52,6 +54,25 @@ def _signal_handler(sig, frame):
 
 
 signal.signal(signal.SIGINT, _signal_handler)
+
+
+# ---------------------------------------------------------------------------
+# Keyboard listener
+# ---------------------------------------------------------------------------
+
+def start_stop_listener(events: dict):
+    """Start a background keyboard listener; 'q' sets events['stop'] = True."""
+
+    def on_press(key):
+        try:
+            if key.char and key.char.lower() == "q":
+                events["stop"] = True
+        except AttributeError:
+            pass
+
+    listener = kb.Listener(on_press=on_press)
+    listener.start()
+    return listener
 
 
 def format_real_robot_observations(
@@ -115,6 +136,16 @@ def convert_policy_action(action_dict: dict) -> dict:
     config_name="baseline_book_flipping",
 )
 def main(cfg: DictConfig) -> None:
+    stop_events = {"stop": False}
+    kb_listener = start_stop_listener(stop_events)
+    try:
+        main_loop(cfg, stop_events)
+    finally:
+        kb_listener.stop()
+        logger.info("Keyboard listener stopped.")
+
+
+def main_loop(cfg: DictConfig, stop_events: dict) -> None:
     eval_dir = Path(cfg.eval.base.load_ckpt) / "eval" / datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     eval_dir.mkdir(parents=True, exist_ok=True)
 
@@ -257,6 +288,11 @@ def main(cfg: DictConfig) -> None:
             leave=False,
         )
         for t in step_bar:
+            if stop_events["stop"]:
+                logger.info("'q' pressed — stopping rollout early.")
+                inference_engine.pause()
+                break
+
             obs = format_real_robot_observations(
                 env.arm,
                 env.image_recorder,
