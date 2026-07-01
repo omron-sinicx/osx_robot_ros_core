@@ -27,6 +27,11 @@ def setup_logging(*log_files: Path) -> None:
 
     Call after ``rospy.init_node()`` — ROS reconfigures logging via
     ``logging.config`` and drops handlers installed earlier (including Hydra's).
+
+    Removes ROS's ``RosStreamHandler`` from the ``rosout`` logger so
+    ``rospy.loginfo()`` is not printed twice (once by ROS, once via root
+    propagation). ``RosOutHandler`` is kept so messages still publish to
+    ``/rosout``.
     """
     formatter = logging.Formatter(_FMT)
     root = logging.getLogger()
@@ -46,6 +51,12 @@ def setup_logging(*log_files: Path) -> None:
         file_handler = _FlushingFileHandler(log_file, mode=mode)
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
+
+    rosout = logging.getLogger("rosout")
+    for handler in rosout.handlers[:]:
+        if handler.__class__.__name__ == "RosStreamHandler":
+            handler.close()
+            rosout.removeHandler(handler)
 
     logging.getLogger("rospy.internal").setLevel(logging.WARNING)
 

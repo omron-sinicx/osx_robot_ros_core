@@ -46,6 +46,9 @@ class FDCCEnv(BaseEnv):
         self.max_delta_rotation = np.deg2rad(self.controller_config.safety_parameters.max_delta_rotation)
         self.initial_config = self.controller_config.init_qpos
 
+        rospy.loginfo(f"Default stiffness: {self.controller_config.stiffness}")
+        rospy.loginfo(f"dt: {self.dt} control frequency: {self.control_frequency}")
+
         self.actions_as_deltas = self.controller_config.actions_as_deltas
 
         self.load_characteristic_length(config)
@@ -85,12 +88,42 @@ class FDCCEnv(BaseEnv):
         self.arm.zero_ft_sensor()
         self.arm.activate_cartesian_controller()
 
-    def reset(self, move_robot=True):
+    def reset(self, move_robot=False):
         if move_robot:
             self.set_controller_parameters()
             self.arm.activate_joint_trajectory_controller()
 
         return super().reset(move_robot=move_robot)
+
+    def move_to_home(self, timeout=5.0):
+        rospy.loginfo("Moving to home Cartesian pose under compliance control...")
+        home_cartesian_pose = self.arm.end_effector(joint_angles=self.initial_config)
+        start_time = rospy.get_time()
+
+        while rospy.get_time() - start_time < timeout and not rospy.is_shutdown():
+            current_pose = self.arm.end_effector()
+            delta_translation = home_cartesian_pose[:3] - current_pose[:3]
+            delta_orientation = transformations.quaternions_orientation_error(home_cartesian_pose[3:], current_pose[3:])
+
+            position_reached = np.linalg.norm(delta_translation) < 0.01
+            orientation_reached = np.all(np.abs(delta_orientation) < 0.1)
+            if position_reached and orientation_reached:
+                break
+
+            clipped_delta_translation, clipped_delta_orientation = self.clip_delta_actions(
+                delta_translation, delta_orientation, 0.04, 0.5)
+            target_position = current_pose[:3] + clipped_delta_translation
+            target_orientation = transformations.rotate_quaternion_by_rpy(
+                *clipped_delta_orientation, current_pose[3:])
+            target_pose = np.concatenate([target_position, target_orientation])
+            self.arm.set_cartesian_target_pose(target_pose)
+
+            self.rate.sleep()
+
+        if rospy.get_time() - start_time >= timeout:
+            rospy.logwarn("Timed out before reaching home Cartesian pose")
+        else:
+            rospy.loginfo("Reached home Cartesian pose")
 
     def step(self, action) -> TimeStep:
         # Check force/torque limits here and if needed return StepType.LAST to end episode.
@@ -208,14 +241,20 @@ class FDCCEnv(BaseEnv):
         #     self.last_gripper_command_stamp = rospy.get_time()
         #     self.last_gripper_command = action['action.gripper']
 
-    def clip_delta_actions(self, delta_translation, delta_orientation):
+    def clip_delta_actions(self, delta_translation, delta_orientation,
+                           max_delta_translation=None, max_delta_rotation=None):
         """
             Make sure that the delta translation and delta orientation are not too large and won't cause jumps in motion 
 
             returns the clipped delta translation and delta orientation
         """
-        clipped_delta_translation = np.clip(delta_translation, -self.max_delta_translation, self.max_delta_translation)
-        clipped_delta_orientation = np.clip(delta_orientation, -self.max_delta_rotation, self.max_delta_rotation)
+        if max_delta_translation is None:
+            max_delta_translation = self.max_delta_translation
+        if max_delta_rotation is None:
+            max_delta_rotation = self.max_delta_rotation
+
+        clipped_delta_translation = np.clip(delta_translation, -max_delta_translation, max_delta_translation)
+        clipped_delta_orientation = np.clip(delta_orientation, -max_delta_rotation, max_delta_rotation)
 
         if not np.allclose(clipped_delta_translation, delta_translation) or not np.allclose(clipped_delta_orientation, delta_orientation):
             rospy.logwarn_throttle(1,

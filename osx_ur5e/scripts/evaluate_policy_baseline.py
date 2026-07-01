@@ -115,7 +115,7 @@ def convert_policy_action(action_dict: dict) -> dict:
     config_name="baseline_book_flipping",
 )
 def main(cfg: DictConfig) -> None:
-    eval_dir = Path(cfg.eval.load_ckpt) / "eval" / datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    eval_dir = Path(cfg.eval.base.load_ckpt) / "eval" / datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     eval_dir.mkdir(parents=True, exist_ok=True)
 
     seed = cfg.eval.seed
@@ -128,9 +128,11 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Seed: {seed}")
     logger.info(f"Results will be saved to: {eval_dir}")
 
-    ckpt_dir = Path(cfg.eval.load_ckpt)
+    policy_filename = OmegaConf.select(cfg, "eval.policy_filename", default="best_ema_policy.ckpt")
+
+    ckpt_dir = Path(cfg.eval.base.load_ckpt)
     logger.info(f"Loading baseline policy from: {ckpt_dir}")
-    bundle = load_baseline_policy(ckpt_dir, ckpt_name=cfg.eval.ckpt_name)
+    bundle = load_baseline_policy(ckpt_dir, ckpt_name=policy_filename)
     bundle.policy.cuda()
     bundle.policy.eval()
 
@@ -147,12 +149,23 @@ def main(cfg: DictConfig) -> None:
         "action.normal_torque",
         "action.estimated_stiffness",
     )
-    missing = [key for key in required_factored if key not in action_keys]
-    if missing:
+    required_vt = (
+        "action.ref_position",
+        "action.ref_rotation_ortho6",
+        "action.virtual_target_position",
+        "action.virtual_target_rotation",
+        "action.estimated_stiffness",
+    )
+    if all(key in action_keys for key in required_factored):
+        action_repr = "factored"
+    elif all(key in action_keys for key in required_vt):
+        action_repr = "virtual_target"
+    else:
         raise ValueError(
-            "This script requires a factored-action baseline. Missing action keys: "
-            + ", ".join(missing)
+            "Unsupported baseline action representation. "
+            f"Got: {action_keys}. Expected factored or virtual-target keys."
         )
+    logger.info(f"Action representation: {action_repr}")
 
     model_section = cfg.model_configs[cfg.model.name]
     camera_shape = tuple(model_section.camera_shape[-2:])
@@ -180,8 +193,8 @@ def main(cfg: DictConfig) -> None:
 
     if env.actions_as_deltas:
         logger.warning(
-            "env.actions_as_deltas is True but factored baseline actions are absolute. "
-            "Set controller.actions_as_deltas=false for factored-action checkpoints."
+            "env.actions_as_deltas is True but baseline actions are absolute. "
+            "Set controller.actions_as_deltas=false for factored/virtual-target checkpoints."
         )
 
     include_stiffness = any("stiffness" in key for key in action_keys)

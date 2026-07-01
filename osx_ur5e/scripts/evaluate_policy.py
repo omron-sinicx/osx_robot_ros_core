@@ -13,6 +13,7 @@ Usage:
 
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
+    q      - stop current rollout and end evaluation
 """
 
 import datetime
@@ -34,6 +35,7 @@ from omegaconf import DictConfig, OmegaConf
 import rospy
 
 from tqdm import tqdm
+from pynput import keyboard as kb
 
 from ur_control import transformations
 
@@ -67,6 +69,25 @@ signal.signal(signal.SIGINT, _signal_handler)
 
 
 # ---------------------------------------------------------------------------
+# Keyboard listener
+# ---------------------------------------------------------------------------
+
+def start_stop_listener(events: dict):
+    """Start a background keyboard listener; 'q' sets events['stop'] = True."""
+
+    def on_press(key):
+        try:
+            if key.char and key.char.lower() == "q":
+                events["stop"] = True
+        except AttributeError:
+            pass
+
+    listener = kb.Listener(on_press=on_press)
+    listener.start()
+    return listener
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -77,6 +98,16 @@ signal.signal(signal.SIGINT, _signal_handler)
     config_name="blackboard_wipe",
 )
 def main(cfg: DictConfig) -> None:
+    stop_events = {"stop": False}
+    kb_listener = start_stop_listener(stop_events)
+    try:
+        main_loop(cfg, stop_events)
+    finally:
+        kb_listener.stop()
+        logger.info("Keyboard listener stopped.")
+
+
+def main_loop(cfg: DictConfig, stop_events: dict) -> None:
     eval_dir = Path(cfg.eval.base.load_ckpt) / "eval" / str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     eval_dir.mkdir(parents=True, exist_ok=True)
 
@@ -146,7 +177,7 @@ def main(cfg: DictConfig) -> None:
     logger.info("Log files: %s , %s", hydra_job_log, eval_log)
     logger.info(f"Eval artifacts: {eval_dir}")
 
-    env = FDCCEnv(config=cfg, use_torch_for_cameras=False)
+    env = FDCCEnv(config=base_cfg, use_torch_for_cameras=False)
 
     # FDCCEnv.reset() asserts reference_trajectory is not None even though
     # it is unused during the actual reset movement — satisfy the check.
@@ -191,7 +222,7 @@ def main(cfg: DictConfig) -> None:
     for rollout_id in rollout_bar:
         # Reset and wait for user confirmation
         inference_engine.pause()
-        env.reset(move_robot=True)
+        env.reset(move_robot=False)
         input(f"\n  Rollout {rollout_id + 1}/{num_rollouts} — press Enter to start...")
 
         env.activate_compliance_control()
@@ -225,6 +256,11 @@ def main(cfg: DictConfig) -> None:
 
         step_bar = tqdm(range(max_timesteps), desc=f"Rollout {rollout_id + 1}/{num_rollouts}", unit="step", leave=False)
         for t in step_bar:
+            if stop_events["stop"]:
+                logger.info("'q' pressed — stopping rollout early.")
+                inference_engine.pause()
+                break
+
             # --- Observe ---
             obs = format_real_robot_observations(
                 env.arm,
@@ -338,10 +374,7 @@ def main(cfg: DictConfig) -> None:
 
         # While still compliant, move to the home Cartesian pose so the robot lifts
         # off the surface before the controller switch (avoids force spike on deactivation)
-        logger.info("Moving to home Cartesian pose under compliance control...")
-        home_cartesian_pose = env.arm.end_effector(joint_angles=env.initial_config)
-        env.arm.set_cartesian_target_pose(home_cartesian_pose)
-        rospy.sleep(5.0)  # give the compliant controller enough time to travel home
+        env.move_to_home(timeout=5.0)
 
         # NOW safe to switch — robot is at home and clear of the surface
         env.deactivate_compliance_control()
