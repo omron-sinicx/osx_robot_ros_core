@@ -17,7 +17,8 @@
   <arg name="framerate"          default="30"/>
 
   <!-- HDMI / USB capture (stream_mode=hdmi) -->
-  <arg name="video_device"       default="/dev/video0"/>
+  <!-- Leave empty to auto-detect the UGREEN capture node via v4l2; override if needed -->
+  <arg name="video_device"       default=""/>
   <arg name="image_width"        default="1920"/>
   <arg name="image_height"       default="1080"/>
   <arg name="pixel_format"       default="yuyv"/>
@@ -44,10 +45,13 @@
   <group if="$(eval stream_mode == 'hdmi')">
     <!-- Reset UVC driver before opening the device; without this, restarting the
          node leaves the capture card in a broken URB state from the previous run. -->
-    <node name="reset_hdmi" pkg="osx_ur5e" type="reset_gopro_hdmi.sh" output="screen"/>
+    <node name="reset_hdmi" pkg="osx_ur5e" type="reset_gopro_hdmi.sh" output="screen"
+          args="$(arg video_device)"/>
     <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen"
           launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' --">
-      <param name="video_device"      value="$(arg video_device)"/>
+      <param if="$(eval video_device != '')" name="video_device" value="$(arg video_device)"/>
+      <param unless="$(eval video_device != '')" name="video_device"
+             command="$(find osx_ur5e)/scripts/find_gopro_hdmi_device.sh"/>
       <param name="pixel_format"      value="$(arg pixel_format)"/>
       <param name="color_format"      value="$(arg color_format)"/>
       <param name="io_method"         value="$(arg io_method)"/>
