@@ -8,48 +8,123 @@ from ur_control import transformations
 
 
 class ImageRecorder:
-    def __init__(self, init_node=True, is_debug=False, camera_names=[], use_torch=False, data_type='float32'):
+    def __init__(
+        self,
+        init_node=True,
+        is_debug=False,
+        camera_names=None,
+        use_torch=False,
+        data_type='float32',
+        max_image_age_s=1.0,
+    ):
         from collections import deque
         import rospy
         from cv_bridge import CvBridge
         from sensor_msgs.msg import Image
         self.is_debug = is_debug
         self.bridge = CvBridge()
-        self.camera_names = camera_names
+        self.camera_names = list(camera_names or [])
+        self.use_torch = use_torch
         self.data_type = data_type
+        self.max_image_age_s = max_image_age_s
         if init_node:
             rospy.init_node('image_recorder', anonymous=True)
         for cam_name in self.camera_names:
-            setattr(self, f'{cam_name}_image', None)
-            setattr(self, f'{cam_name}_secs', None)
-            setattr(self, f'{cam_name}_nsecs', None)
+            setattr(self, f'{cam_name}_msg', None)
             setattr(self, f'{cam_name}_timestamps', deque(maxlen=50))
-            rospy.Subscriber(f"/{cam_name}/color/image_raw", Image, self.image_cb, callback_args={'cam_name': cam_name, 'use_torch': use_torch})
+            rospy.Subscriber(
+                f"/{cam_name}/color/image_raw",
+                Image,
+                self.image_cb,
+                callback_args={'cam_name': cam_name},
+                queue_size=1,
+            )
         rospy.sleep(0.5)
 
     def image_cb(self, data, args):
         cam_name = args['cam_name']
-        if args['use_torch']:
-            setattr(self, f'{cam_name}_image', torch.from_numpy(self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough')).cuda())
-        else:
-            setattr(self, f'{cam_name}_image', self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough'))
-        setattr(self, f'{cam_name}_timestamp', rospy.get_time())
+        setattr(self, f'{cam_name}_msg', data)
 
         if self.is_debug:
-            getattr(self, f'{cam_name}_timestamps').append(data.header.stamp.secs + (data.header.stamp.nsecs * 1e-9))
+            getattr(self, f'{cam_name}_timestamps').append(
+                data.header.stamp.secs + (data.header.stamp.nsecs * 1e-9)
+            )
 
-    def get_images(self):
+    def _message_age_s(self, msg) -> float:
+        import rospy
+        if msg is None or msg.header.stamp == rospy.Time():
+            return float('inf')
+        return (rospy.Time.now() - msg.header.stamp).to_sec()
+
+    def _decode_image(self, msg):
+        image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+        if self.use_torch:
+            image = torch.from_numpy(image).cuda()
+        elif self.data_type == 'float32':
+            image = (image / 255.0).astype(np.float32)
+        return image
+
+    def get_images(self, camera_names=None, max_image_age_s=None):
+        import rospy
         image_dict = dict()
-        for cam_name in self.camera_names:
-            if hasattr(self, f'{cam_name}_timestamp') and rospy.get_time() - getattr(self, f'{cam_name}_timestamp') > 0.5:
-                rospy.logerr_throttle(1, "Image is too old! ignoring")
+        max_age = self.max_image_age_s if max_image_age_s is None else max_image_age_s
+        for cam_name in (camera_names or self.camera_names):
+            msg = getattr(self, f'{cam_name}_msg', None)
+            if msg is None:
                 image_dict[cam_name] = None
-            else:
-                image = getattr(self, f'{cam_name}_image')
-                if self.data_type == 'float32':
-                    image = (image/255.0).astype(np.float32)
-                image_dict[cam_name] = image
+                continue
+
+            age_s = self._message_age_s(msg)
+            if age_s > max_age:
+                rospy.logerr_throttle(
+                    1,
+                    "Image is too old for %s (age=%.2fs, max=%.2fs); ignoring",
+                    cam_name,
+                    age_s,
+                    max_age,
+                )
+                image_dict[cam_name] = None
+                continue
+
+            image_dict[cam_name] = self._decode_image(msg)
         return image_dict
+
+    def wait_for_fresh_images(
+        self,
+        camera_names=None,
+        timeout_s=2.0,
+        max_image_age_s=None,
+    ):
+        """Wait until all requested cameras have a recent frame."""
+        import rospy
+
+        requested = list(camera_names or self.camera_names)
+        if not requested:
+            return {}
+
+        deadline = rospy.get_time() + timeout_s
+        last_images = {}
+        while rospy.get_time() <= deadline and not rospy.is_shutdown():
+            last_images = self.get_images(requested, max_image_age_s=max_image_age_s)
+            missing = [cam for cam in requested if last_images.get(cam) is None]
+            if not missing:
+                return last_images
+            rospy.sleep(0.05)
+
+        return last_images
+
+    def get_diagnostics(self):
+        import rospy
+        diagnostics = {}
+        for cam_name in self.camera_names:
+            msg = getattr(self, f'{cam_name}_msg', None)
+            diagnostics[cam_name] = {
+                'has_message': msg is not None,
+                'age_s': None if msg is None else self._message_age_s(msg),
+                'stamp': None if msg is None else msg.header.stamp.to_sec(),
+                'now': rospy.Time.now().to_sec(),
+            }
+        return diagnostics
 
     def print_diagnostics(self):
         def dt_helper(l):

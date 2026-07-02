@@ -8,6 +8,8 @@ from torchvision import transforms
 
 from ur_control import transformations
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -65,10 +67,80 @@ def setup_logging(*log_files: Path) -> None:
 # Observation formatting
 # ---------------------------------------------------------------------------
 
+def _obs_key_set(features_or_keys: dict | set[str]) -> set[str]:
+    if isinstance(features_or_keys, dict):
+        return set(features_or_keys.keys())
+    return set(features_or_keys)
+
+
+def _camera_names_from_obs_keys(wanted_keys: set[str]) -> list[str]:
+    prefix = "observation.images."
+    return [key[len(prefix):] for key in wanted_keys if key.startswith(prefix)]
+
+
+def _image_hwc_to_chw(image: np.ndarray) -> np.ndarray:
+    """Convert HWC (or CHW) uint8/float image array to CHW contiguous uint8 layout."""
+    arr = np.asarray(image)
+    if arr.ndim == 2:
+        arr = arr[..., np.newaxis]
+    if arr.ndim != 3:
+        raise ValueError(f"Expected 2D or 3D image array, got shape {arr.shape}")
+
+    if arr.shape[-1] in (1, 3, 4):
+        return np.ascontiguousarray(np.transpose(arr, (2, 0, 1)))
+    if arr.shape[0] in (1, 3, 4):
+        return np.ascontiguousarray(arr)
+    raise ValueError(f"Cannot infer HWC/CHW layout for image shape {arr.shape}")
+
+
+def _get_fresh_camera_images(image_recorder, camera_names: list[str], max_wait_s: float = 2.0):
+    """Return camera images, retrying briefly when frames are stale or missing."""
+    if not camera_names:
+        return {}
+
+    if hasattr(image_recorder, "wait_for_fresh_images"):
+        last_images = image_recorder.wait_for_fresh_images(
+            camera_names=camera_names,
+            timeout_s=max_wait_s,
+        )
+    else:
+        import rospy
+
+        deadline = rospy.get_time() + max_wait_s
+        last_images = {}
+        while rospy.get_time() <= deadline and not rospy.is_shutdown():
+            last_images = image_recorder.get_images()
+            missing = [
+                cam_name
+                for cam_name in camera_names
+                if last_images.get(cam_name) is None
+            ]
+            if not missing:
+                return last_images
+            rospy.sleep(0.05)
+
+    missing = [cam for cam in camera_names if last_images.get(cam) is None]
+    if missing:
+        diagnostics = (
+            image_recorder.get_diagnostics()
+            if hasattr(image_recorder, "get_diagnostics")
+            else {}
+        )
+        details = ", ".join(
+            f"{cam}={diagnostics.get(cam, {})}" for cam in missing
+        )
+        raise RuntimeError(
+            "Camera image(s) unavailable (stale or not received yet): "
+            f"{missing}. Check camera topics and that streams are publishing. "
+            f"Diagnostics: {details}"
+        )
+    return last_images
+
+
 def format_real_robot_observations(
     arm,
     image_recorder,
-    features: dict,
+    features_or_keys: dict | set[str],
     camera_shape: tuple,
 ) -> dict:
     """Build a policy-ready observation dict from the real robot arm and cameras.
@@ -79,12 +151,14 @@ def format_real_robot_observations(
     Args:
         arm: CompliantController instance from FDCCEnv.
         image_recorder: ImageRecorder instance from FDCCEnv.
-        features: Feature dict loaded from the policy checkpoint (used to filter keys).
+        features_or_keys: Feature dict from checkpoint or a set of observation key names.
         camera_shape: (H, W) to resize camera images to match training resolution.
 
     Returns:
         Dict mapping observation keys to torch tensors ready for policy.select_action().
     """
+    wanted_keys = _obs_key_set(features_or_keys)
+
     eef = arm.end_effector()
     eef_velocity = arm.end_effector_velocity()
 
@@ -101,23 +175,42 @@ def format_real_robot_observations(
 
     obs = {}
 
-    # State observations — only keep keys the policy actually uses
     for key, value in raw_obs.items():
-        if key in features:
+        if key in wanted_keys:
             obs[key] = torch.tensor(np.array(value).flatten(), dtype=torch.float32)
 
-    # Camera images
     if image_recorder is not None:
         resize_transform = transforms.Resize(camera_shape, antialias=True)
-        raw_images = image_recorder.get_images()
-        for cam_name, image_hwc in raw_images.items():
+        camera_names = _camera_names_from_obs_keys(wanted_keys)
+        raw_images = _get_fresh_camera_images(image_recorder, camera_names)
+        for cam_name, image in raw_images.items():
             feat_key = f"observation.images.{cam_name}"
-            if feat_key in features:
-                image_chw = np.ascontiguousarray(np.transpose(image_hwc, (2, 0, 1)))
-                image_tensor = torch.tensor(image_chw, dtype=torch.uint8)
-                obs[feat_key] = resize_transform(image_tensor)
+            if feat_key not in wanted_keys:
+                continue
+            if image is None:
+                raise RuntimeError(f"Camera '{cam_name}' returned no image after wait.")
+            image_chw = _image_hwc_to_chw(image)
+            if image_chw.dtype != np.uint8:
+                image_chw = np.clip(image_chw, 0, 255).astype(np.uint8)
+            image_tensor = torch.tensor(image_chw, dtype=torch.uint8)
+            obs[feat_key] = resize_transform(image_tensor)
+
+    missing = wanted_keys - set(obs.keys())
+    if missing:
+        raise KeyError(f"Missing required observation keys: {sorted(missing)}")
 
     return obs
+
+
+def tensor_dict_to_numpy(action_dict: dict) -> dict:
+    """Convert policy output tensors to numpy arrays (baseline / factored actions)."""
+    env_action = {}
+    for key, value in action_dict.items():
+        if isinstance(value, torch.Tensor):
+            env_action[key] = value.squeeze(0).cpu().numpy() if value.dim() > 0 else value.cpu().numpy()
+        else:
+            env_action[key] = np.array(value)
+    return env_action
 
 
 # ---------------------------------------------------------------------------

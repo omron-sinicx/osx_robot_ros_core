@@ -2,7 +2,7 @@ from comet.common.utils.vt_utils import (
     process_factored_action_dict,
     compute_directional_stiffness_diagonal,
 )
-from comet.common.datasets.postprocess_utils import load_characteristic_length
+from comet.common.datasets.dataset_info_utils import load_characteristic_length
 import rospy
 import numpy as np
 from pathlib import Path
