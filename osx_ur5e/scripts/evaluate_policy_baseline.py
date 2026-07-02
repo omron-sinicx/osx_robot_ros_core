@@ -253,7 +253,7 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
     rollout_bar = tqdm(range(num_rollouts), desc="Evaluation", unit="rollout")
     for rollout_id in rollout_bar:
         inference_engine.pause()
-        env.reset(move_robot=True)
+        env.reset(move_robot=False)
         input(f"\n  Rollout {rollout_id + 1}/{num_rollouts} — press Enter to start...")
 
         env.activate_compliance_control()
@@ -356,11 +356,11 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
 
         step_bar.close()
 
-        current_pose = env.arm.end_effector()
-        retract_pose = current_pose.copy()
-        retract_pose[2] -= 0.05
-        env.arm.set_cartesian_target_pose(retract_pose)
-        rospy.sleep(1.5)
+        # While still compliant, move to the home Cartesian pose so the robot lifts
+        # off the surface before the controller switch (avoids force spike on deactivation)
+        env.move_to_home(timeout=5.0)
+
+        # NOW safe to switch — robot is at home and clear of the surface
         env.deactivate_compliance_control()
 
         steps_taken = t + 1
