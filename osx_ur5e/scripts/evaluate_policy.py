@@ -19,6 +19,12 @@ Usage:
     # Async inference:
     python evaluate_policy.py eval.inference.mode=async
 
+    # DMP force execution layer (dry run first):
+    python evaluate_policy.py eval.force_layer.enabled=true eval.force_layer.dry_run=true
+
+    # On-demand force via ROS topic (external mode):
+    rostopic pub /comet/target_force std_msgs/Float32 "data: 25.0" -r 5
+
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
     q      - stop current rollout and end evaluation
