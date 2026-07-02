@@ -131,7 +131,11 @@ def get_observations(arm: CompliantController, image_recorder: ImageRecorder) ->
         "observation.ft":                      arm.get_wrench(),
     }
     if image_recorder is not None:
-        obs.update({f"observation.images.{k}": v for k, v in image_recorder.get_images().items()})
+        if hasattr(image_recorder, "wait_for_fresh_images"):
+            images = image_recorder.wait_for_fresh_images(timeout_s=0.2)
+        else:
+            images = image_recorder.get_images()
+        obs.update({f"observation.images.{k}": v for k, v in images.items()})
     return obs
 
 
@@ -307,7 +311,11 @@ def main(cfg: DictConfig) -> None:
     arm.zero_ft_sensor()
 
     image_recorder = (
-        ImageRecorder(init_node=False, camera_names=list(ds_cfg.cameras))
+        ImageRecorder(
+            init_node=False,
+            camera_names=list(ds_cfg.cameras),
+            sync_ns=ds_cfg.get("cameras_sync_ns"),
+        )
         if ds_cfg.cameras
         else None
     )

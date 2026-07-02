@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config" default="$(find multi_camera_sync)/config/example.yaml"/>
+  <arg name="slop" default=""/>
+  <arg name="queue_size" default=""/>
+  <arg name="output_namespace" default=""/>
+  <arg name="reference_camera" default=""/>
+
+  <node pkg="multi_camera_sync" type="multi_camera_sync_node" name="multi_camera_sync" output="screen">
+    <param name="config" value="$(arg config)"/>
+    <param if="$(eval arg('slop') != '')" name="slop" value="$(arg slop)"/>
+    <param if="$(eval arg('queue_size') != '')" name="queue_size" value="$(arg queue_size)"/>
+    <param if="$(eval arg('output_namespace') != '')" name="output_namespace" value="$(arg output_namespace)"/>
+    <param if="$(eval arg('reference_camera') != '')" name="reference_camera" value="$(arg reference_camera)"/>
+  </node>
+</launch>

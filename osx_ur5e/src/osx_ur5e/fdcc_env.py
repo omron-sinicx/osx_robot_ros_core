@@ -37,6 +37,7 @@ class FDCCEnv(BaseEnv):
         self.dt = 1. / self.control_frequency
 
         self.cam_names = config.dataset.cameras.keys()
+        self.cameras_sync_ns = config.dataset.get("cameras_sync_ns", None)
         rospy.loginfo(f"Cameras to record from: {self.cam_names}")
         self.controller_config = config.controller
         self.max_force_torque = self.controller_config.safety_parameters.max_force_torque

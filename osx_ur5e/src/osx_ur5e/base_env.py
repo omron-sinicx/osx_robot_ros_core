@@ -39,7 +39,12 @@ class BaseEnv:
         self.arm.dashboard_services.activate_ros_control_on_ur()
 
         self.target_wrench = np.zeros(6)
-        self.image_recorder = ImageRecorder(init_node=False, camera_names=self.cam_names, use_torch=use_torch_for_cameras)
+        self.image_recorder = ImageRecorder(
+            init_node=False,
+            camera_names=self.cam_names,
+            use_torch=use_torch_for_cameras,
+            sync_ns=getattr(self, "cameras_sync_ns", None),
+        )
 
         self.rate = rospy.Rate(self.control_frequency)
 

@@ -1,0 +1,12 @@
+slop: 0.025
+queue_size: 30
+reference_camera: front_camera
+output_namespace: sync
+cameras:
+  front_camera:
+    topic: /front_camera/color/image_raw
+  wrist_camera:
+    topic: /wrist_camera/color/image_raw
+  # GoPro via usb_cam (separate ROS node; same sync logic, one IPC copy):
+  # head_camera:
+  #   topic: /head_camera/image_raw

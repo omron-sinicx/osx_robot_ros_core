@@ -21,6 +21,8 @@ cameras:
     width: 640
     channels: 3
 
+cameras_sync_ns: sync
+
 # ================== Observation (state) features ==================
 # key: feature name used in the dataset
 # value: list of ints representing the shape

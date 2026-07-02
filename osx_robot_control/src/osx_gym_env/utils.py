@@ -1,5 +1,4 @@
 import numpy as np
-import time
 
 import torch
 
@@ -16,6 +15,8 @@ class ImageRecorder:
         use_torch=False,
         data_type='float32',
         max_image_age_s=1.0,
+        sync_ns=None,
+        image_topic_template=None,
     ):
         from collections import deque
         import rospy
@@ -27,13 +28,25 @@ class ImageRecorder:
         self.use_torch = use_torch
         self.data_type = data_type
         self.max_image_age_s = max_image_age_s
+        self.sync_ns = sync_ns
+        if image_topic_template is None:
+            if sync_ns:
+                image_topic_template = '/{sync_ns}/{cam_name}/image_raw'
+            else:
+                image_topic_template = '/{cam_name}/color/image_raw'
+        self.image_topic_template = image_topic_template
         if init_node:
             rospy.init_node('image_recorder', anonymous=True)
         for cam_name in self.camera_names:
             setattr(self, f'{cam_name}_msg', None)
+            setattr(self, f'{cam_name}_received_at', None)
             setattr(self, f'{cam_name}_timestamps', deque(maxlen=50))
+            topic = self.image_topic_template.format(
+                sync_ns=sync_ns or '',
+                cam_name=cam_name,
+            )
             rospy.Subscriber(
-                f"/{cam_name}/color/image_raw",
+                topic,
                 Image,
                 self.image_cb,
                 callback_args={'cam_name': cam_name},
@@ -44,15 +57,22 @@ class ImageRecorder:
     def image_cb(self, data, args):
         cam_name = args['cam_name']
         setattr(self, f'{cam_name}_msg', data)
+        setattr(self, f'{cam_name}_received_at', rospy.Time.now())
 
         if self.is_debug:
             getattr(self, f'{cam_name}_timestamps').append(
                 data.header.stamp.secs + (data.header.stamp.nsecs * 1e-9)
             )
 
-    def _message_age_s(self, msg) -> float:
+    def _message_age_s(self, msg, cam_name=None) -> float:
         import rospy
-        if msg is None or msg.header.stamp == rospy.Time():
+        if msg is None:
+            return float('inf')
+        if cam_name is not None:
+            received_at = getattr(self, f'{cam_name}_received_at', None)
+            if received_at is not None:
+                return (rospy.Time.now() - received_at).to_sec()
+        if msg.header.stamp == rospy.Time():
             return float('inf')
         return (rospy.Time.now() - msg.header.stamp).to_sec()
 
@@ -74,7 +94,7 @@ class ImageRecorder:
                 image_dict[cam_name] = None
                 continue
 
-            age_s = self._message_age_s(msg)
+            age_s = self._message_age_s(msg, cam_name=cam_name)
             if age_s > max_age:
                 rospy.logerr_throttle(
                     1,
@@ -116,14 +136,25 @@ class ImageRecorder:
     def get_diagnostics(self):
         import rospy
         diagnostics = {}
+        stamps = []
         for cam_name in self.camera_names:
             msg = getattr(self, f'{cam_name}_msg', None)
+            stamp = None if msg is None else msg.header.stamp.to_sec()
+            if stamp is not None:
+                stamps.append(stamp)
             diagnostics[cam_name] = {
                 'has_message': msg is not None,
-                'age_s': None if msg is None else self._message_age_s(msg),
-                'stamp': None if msg is None else msg.header.stamp.to_sec(),
+                'age_s': None if msg is None else self._message_age_s(msg, cam_name=cam_name),
+                'header_age_s': None if msg is None else (
+                    float('inf') if msg.header.stamp == rospy.Time()
+                    else (rospy.Time.now() - msg.header.stamp).to_sec()
+                ),
+                'stamp': stamp,
                 'now': rospy.Time.now().to_sec(),
             }
+        if len(stamps) >= 2:
+            diagnostics['max_stamp_skew_s'] = max(stamps) - min(stamps)
+        diagnostics['sync_ns'] = self.sync_ns
         return diagnostics
 
     def print_diagnostics(self):
