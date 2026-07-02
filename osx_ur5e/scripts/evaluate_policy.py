@@ -43,14 +43,29 @@ from comet.common.utils.utils import load_base_policy
 from comet.common.utils.ft_visualizer import FTVisualizer
 from comet.common.utils.viz_utils import save_to_video
 from comet.common.policies.types import FeatureType
-from comet.common.policies.guidance_utils import setup_guidance, feed_force_to_guidance
+from comet.common.policies.guidance_utils import setup_guidance, feed_force_to_guidance, setup_force_inpainting
+from comet.control import build_force_layer
 from comet.inference import AsyncInferenceEngine, build_inference_engine
 from comet.inference.utils import split_action_tensor, to_cuda_batch
 
 from osx_ur5e.fdcc_env import FDCCEnv
 from osx_ur5e.debug_utils import install_horizon_logger
 from osx_ur5e.utils import convert_policy_action, format_real_robot_observations, setup_logging
-from comet.scripts.utils.visualize_episode import plot_factored_from_arrays, plot_virtual_from_arrays
+from comet.scripts.utils.visualize_episode import (
+    plot_dmp_force_tracking,
+    plot_factored_from_arrays,
+    plot_virtual_from_arrays,
+)
+
+# guidance types that fight the execution-layer force controller (two force
+# integrators in nested loops); asserted mutually exclusive with eval.force_layer
+FORCE_GUIDANCE_TYPES = {
+    "compliance_controller",
+    "compliance_controller_single",
+    "vt_compliance_controller",
+    "force_goal_analytical",
+    "compliance_force_prediction",
+}
 
 
 logger = logging.getLogger(__name__)
@@ -155,6 +170,32 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
     # Guidance setup
     # ------------------------------------------------------------------
     setup_guidance(policy, cfg, base_cfg, features, control_frequency)
+    setup_force_inpainting(policy, cfg)
+
+    # ------------------------------------------------------------------
+    # Execution-layer force controller (DMP layer)
+    # ------------------------------------------------------------------
+    force_layer_cfg = OmegaConf.select(cfg, "eval.force_layer")
+    force_layer = build_force_layer(
+        OmegaConf.to_container(force_layer_cfg, resolve=True) if force_layer_cfg is not None else None,
+        1.0 / control_frequency,
+    )
+    if force_layer is not None:
+        configured_guidance = {
+            OmegaConf.select(cfg, "eval.guidance_type"),
+            OmegaConf.select(cfg, "eval.compliance_guidance_type"),
+        } & FORCE_GUIDANCE_TYPES
+        if configured_guidance:
+            gradient_guidance_on = bool(base_cfg.model.diffusion_config.gradient_guidance)
+            msg = (
+                f"eval.force_layer and force guidance {sorted(configured_guidance)} are both "
+                "configured — their integrators fight; disable one."
+            )
+            if gradient_guidance_on:
+                raise ValueError(msg)
+            logger.warning("%s (inactive for this checkpoint: gradient_guidance=false)", msg)
+        if force_layer.cfg.dry_run:
+            logger.info("Force layer in DRY RUN mode: diagnostics only, original actions executed.")
 
     # ------------------------------------------------------------------
     # Horizon prediction logger (optional)
@@ -168,6 +209,15 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
     # Load env config and build FDCCEnv
     # ------------------------------------------------------------------
     rospy.init_node("evaluate_policy", anonymous=False)
+
+    if force_layer is not None:
+        from std_msgs.msg import Float32
+
+        rospy.Subscriber(
+            force_layer.cfg.external_topic, Float32,
+            lambda msg: force_layer.set_external_target(msg.data),
+        )
+        logger.info(f"Force layer external target topic: {force_layer.cfg.external_topic}")
 
     hydra_dir = Path(HydraConfig.get().runtime.output_dir)
     hydra_job_log = hydra_dir / f"{HydraConfig.get().job.name}.log"
@@ -228,6 +278,8 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
         env.activate_compliance_control()
         inference_engine.reset()
         inference_engine.resume()
+        if force_layer is not None:
+            force_layer.reset(np.asarray(env.arm.end_effector(), dtype=np.float64))
 
         if isinstance(inference_engine, AsyncInferenceEngine):
             # BG thread waits for obs_holder before inferring; seed one observation
@@ -253,6 +305,7 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
         force_violation = False
         logged_obs_eef = []
         logged_actions = []
+        logged_force_layer = []
 
         step_bar = tqdm(range(max_timesteps), desc=f"Rollout {rollout_id + 1}/{num_rollouts}", unit="step", leave=False)
         for t in step_bar:
@@ -329,6 +382,17 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
             })
 
             env_action = convert_policy_action(action_dict, actions_as_deltas)
+
+            eef_pose = np.asarray(env.arm.end_effector(), dtype=np.float64)
+            logged_obs_eef.append(eef_pose[:3].copy())
+
+            # --- Execution-layer force controller ---
+            if force_layer is not None:
+                pre_step_wrench = np.asarray(env.arm.get_wrench(), dtype=np.float64)
+                exec_action = force_layer.step(env_action, wrench=pre_step_wrench, eef_pose=eef_pose)
+                logged_force_layer.append(force_layer.diagnostics)
+                if not force_layer.cfg.dry_run:
+                    env_action = exec_action
 
             # --- Step ---
             timestep = env.step(env_action)
@@ -426,6 +490,15 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
                 traj_fig.write_html(eval_dir / f"rollout_{rollout_id}_trajectory.html")
                 logger.info(f"Saved trajectory plot: rollout_{rollout_id}_trajectory.html")
 
+            if logged_force_layer:
+                force_fig = plot_dmp_force_tracking(
+                    logged_force_layer,
+                    control_dt=1.0 / control_frequency,
+                    title=f"Rollout {rollout_id} — Force layer tracking",
+                )
+                force_fig.write_html(eval_dir / f"rollout_{rollout_id}_dmp_force.html")
+                logger.info(f"Saved force-layer plot: rollout_{rollout_id}_dmp_force.html")
+
             # Save rollout data as CSV
             csv_data = {
                 "obs.eef.position[0]": obs_arr[:, 0],
@@ -438,6 +511,15 @@ def main_loop(cfg: DictConfig, stop_events: dict) -> None:
                 else:
                     for d in range(arr.shape[1]):
                         csv_data[f"{key}[{d}]"] = arr[:, d]
+            # Force-layer diagnostics (same tick cadence as logged_actions)
+            if logged_force_layer:
+                for key in logged_force_layer[0]:
+                    arr = np.asarray([diag[key] for diag in logged_force_layer])
+                    if arr.ndim == 1:
+                        csv_data[f"dmp.{key}"] = arr
+                    else:
+                        for d in range(arr.shape[1]):
+                            csv_data[f"dmp.{key}[{d}]"] = arr[:, d]
             pd.DataFrame(csv_data).to_csv(
                 eval_dir / f"rollout_{rollout_id}_trajectory.csv", index_label="step")
             logger.info(f"Saved trajectory CSV: rollout_{rollout_id}_trajectory.csv")
