@@ -11,76 +11,77 @@
     WiFi modes require the PC to be connected to the GoPro AP first.
     Only one client may read UDP port 8554 at a time.
   -->
-  <arg name="stream_mode"        default="hdmi"/>
-  <arg name="camera_name"        default="head_camera"/>
-  <arg name="camera_frame_id"    default="head_camera"/>
-  <arg name="framerate"          default="30"/>
+  <arg name="stream_mode" default="hdmi" />
+  <arg name="camera_name" default="wrist_camera" />
+  <arg name="camera_frame_id" default="wrist_camera" />
+  <arg name="framerate" default="30" />
 
   <!-- HDMI / USB capture (stream_mode=hdmi) -->
   <!-- Leave empty to auto-detect the UGREEN capture node via v4l2; override if needed -->
-  <arg name="video_device"       default=""/>
-  <arg name="image_width"        default="1920"/>
-  <arg name="image_height"       default="1080"/>
-  <arg name="pixel_format"       default="yuyv"/>
-  <arg name="color_format"       default="yuv422p"/>
-  <arg name="io_method"          default="mmap"/>
+  <arg name="video_device" default="" />
+  <arg name="image_width" default="1920" />
+  <arg name="image_height" default="1080" />
+  <arg name="pixel_format" default="yuyv" />
+  <arg name="color_format" default="yuv422p" />
+  <arg name="io_method" default="mmap" />
 
   <!-- WiFi streaming (stream_mode=wifi_webcam or wifi_preview) -->
-  <arg name="stream_port"        default="8554"/>
-  <arg name="stream_host"        default="127.0.0.1"/>
-  <arg name="gopro_base_url"     default="http://10.5.5.9:8080"/>
-  <arg name="start_stream"       default="true"/>
-  <arg name="stop_stream_on_shutdown" default="true"/>
-  <arg name="buffer_size"        default="1"/>
-  <arg name="stream_warmup_s"    default="1.0"/>
+  <arg name="stream_port" default="8554" />
+  <arg name="stream_host" default="127.0.0.1" />
+  <arg name="gopro_base_url" default="http://10.5.5.9:8080" />
+  <arg name="start_stream" default="true" />
+  <arg name="stop_stream_on_shutdown" default="true" />
+  <arg name="buffer_size" default="1" />
+  <arg name="stream_warmup_s" default="1.0" />
   <!-- webcam: res 4=480p (lowest latency) 7=720p 12=1080p | protocol 1=TS 2=RTSP -->
-  <arg name="webcam_resolution"  default="4"/>
-  <arg name="webcam_fov"         default="0"/>
-  <arg name="webcam_protocol"    default="1"/>
+  <arg name="webcam_resolution" default="4" />
+  <arg name="webcam_fov" default="0" />
+  <arg name="webcam_protocol" default="1" />
   <!-- Matches ffplay -fflags nobuffer -flags low_delay; without this OpenCV/FFmpeg
        buffers aggressively and the delay equals an unflagged bare ffplay call. -->
   <arg name="ffmpeg_capture_options"
-       default="fflags;nobuffer|flags;low_delay|analyzeduration;0|probesize;32|max_delay;0"/>
+    default="fflags;nobuffer|flags;low_delay|analyzeduration;0|probesize;32|max_delay;0" />
 
   <group if="$(eval stream_mode == 'hdmi')">
     <!-- Reset UVC driver before opening the device; without this, restarting the
          node leaves the capture card in a broken URB state from the previous run. -->
     <node name="reset_hdmi" pkg="osx_ur5e" type="reset_gopro_hdmi.sh" output="screen"
-          args="$(arg video_device)"/>
+      args="$(arg video_device)" />
     <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen"
-          launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' --">
-      <param if="$(eval video_device != '')" name="video_device" value="$(arg video_device)"/>
+      launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' --">
+      <param if="$(eval video_device != '')" name="video_device" value="$(arg video_device)" />
       <param unless="$(eval video_device != '')" name="video_device"
-             command="$(find osx_ur5e)/scripts/find_gopro_hdmi_device.sh"/>
-      <param name="pixel_format"      value="$(arg pixel_format)"/>
-      <param name="color_format"      value="$(arg color_format)"/>
-      <param name="io_method"         value="$(arg io_method)"/>
-      <param name="image_width"       value="$(arg image_width)"/>
-      <param name="image_height"      value="$(arg image_height)"/>
-      <param name="framerate"         value="$(arg framerate)"/>
-      <param name="camera_name"       value="$(arg camera_name)"/>
-      <param name="camera_frame_id"   value="$(arg camera_frame_id)"/>
+        command="$(find osx_ur5e)/scripts/find_gopro_hdmi_device.sh" />
+      <param name="pixel_format" value="$(arg pixel_format)" />
+      <param name="color_format" value="$(arg color_format)" />
+      <param name="io_method" value="$(arg io_method)" />
+      <param name="image_width" value="$(arg image_width)" />
+      <param name="image_height" value="$(arg image_height)" />
+      <param name="framerate" value="$(arg framerate)" />
+      <param name="camera_name" value="$(arg camera_name)" />
+      <param name="camera_frame_id" value="$(arg camera_frame_id)" />
     </node>
   </group>
 
   <group if="$(eval stream_mode == 'wifi_webcam' or stream_mode == 'wifi_preview')">
     <node name="gopro_wifi_stream" pkg="osx_ur5e" type="gopro_wifi_stream.py" output="screen">
-      <param name="camera_name"             value="$(arg camera_name)"/>
-      <param name="camera_frame_id"         value="$(arg camera_frame_id)"/>
-      <param name="framerate"               value="$(arg framerate)"/>
-      <param name="buffer_size"             value="$(arg buffer_size)"/>
-      <param name="stream_warmup_s"         value="$(arg stream_warmup_s)"/>
-      <param name="gopro_base_url"          value="$(arg gopro_base_url)"/>
-      <param name="start_stream"            value="$(arg start_stream)"/>
-      <param name="stop_stream_on_shutdown" value="$(arg stop_stream_on_shutdown)"/>
-      <param name="stream_port"             value="$(arg stream_port)"/>
-      <param name="webcam_resolution"       value="$(arg webcam_resolution)"/>
-      <param name="webcam_fov"              value="$(arg webcam_fov)"/>
-      <param name="webcam_protocol"         value="$(arg webcam_protocol)"/>
-      <param name="stream_mode"             value="$(eval 'webcam' if stream_mode == 'wifi_webcam' else 'preview')"/>
-      <param name="ffmpeg_capture_options"  value="$(arg ffmpeg_capture_options)"/>
+      <param name="camera_name" value="$(arg camera_name)" />
+      <param name="camera_frame_id" value="$(arg camera_frame_id)" />
+      <param name="framerate" value="$(arg framerate)" />
+      <param name="buffer_size" value="$(arg buffer_size)" />
+      <param name="stream_warmup_s" value="$(arg stream_warmup_s)" />
+      <param name="gopro_base_url" value="$(arg gopro_base_url)" />
+      <param name="start_stream" value="$(arg start_stream)" />
+      <param name="stop_stream_on_shutdown" value="$(arg stop_stream_on_shutdown)" />
+      <param name="stream_port" value="$(arg stream_port)" />
+      <param name="webcam_resolution" value="$(arg webcam_resolution)" />
+      <param name="webcam_fov" value="$(arg webcam_fov)" />
+      <param name="webcam_protocol" value="$(arg webcam_protocol)" />
+      <param name="stream_mode"
+        value="$(eval 'webcam' if stream_mode == 'wifi_webcam' else 'preview')" />
+      <param name="ffmpeg_capture_options" value="$(arg ffmpeg_capture_options)" />
       <param name="stream_url"
-             value="udp://$(arg stream_host):$(arg stream_port)?overrun_nonfatal=1&amp;fifo_size=131072"/>
+        value="udp://$(arg stream_host):$(arg stream_port)?overrun_nonfatal=1&amp;fifo_size=131072" />
     </node>
   </group>
 </launch>
