@@ -1,47 +1,32 @@
 <?xml version="1.0"?>
-<package>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
   <name>osx_examples</name>
-  <version>0.1.0</version>
-  <description>The osx_examples package</description>
+  <version>0.2.0</version>
+  <description>Interactive motion-planning and direct-control examples (ROS 2 port).</description>
 
-  <maintainer email="cristianbehe@gmail.com">Cristian C. Beltran-Hernandez</maintainer>
-
+  <maintainer email="cristian.beltran@sinicx.com">Cristian Beltran</maintainer>
   <license>BSD</license>
- 
-  <build_depend>roscpp</build_depend>
-  <build_depend>rospy</build_depend>
-  <run_depend>roscpp</run_depend>
-  <run_depend>rospy</run_depend>
 
-  <build_depend>std_msgs</build_depend>
-  <build_depend>geometry_msgs</build_depend>
-  <run_depend>std_msgs</run_depend>
-  <run_depend>geometry_msgs</run_depend>
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>ur_control</depend>
 
-  <run_depend>tf</run_depend>
-  <run_depend>tf_conversions</run_depend>
-  <build_depend>tf</build_depend>
-  <build_depend>tf_conversions</build_depend>
+  <exec_depend>moveit_py</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>ur_gripper_gz_moveit_config</exec_depend>
+  <exec_depend>ur_gripper_gz</exec_depend>
+  <exec_depend>moveit_ros_move_group</exec_depend>
 
-  <run_depend>ur_description</run_depend>
-  <run_depend>moveit_core</run_depend>
-  <run_depend>moveit_commander</run_depend>
-  <run_depend>moveit_ros_planning_interface</run_depend>
-  <run_depend>moveit_ros_planning</run_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
-  <run_depend>robotiq_msgs</run_depend>
-  <build_depend>robotiq_msgs</build_depend>
-  <run_depend>osx_msgs</run_depend>
-  <build_depend>osx_msgs</build_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
-  <run_depend>ur_msgs</run_depend>
-  <build_depend>ur_msgs</build_depend>
-  <run_depend>ur_control</run_depend>
-  <build_depend>ur_control</build_depend>
-
-  <build_depend>message_generation</build_depend>
-  
-  <buildtool_depend>catkin</buildtool_depend>
-  
-  <test_depend>rostest</test_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
 </package>
