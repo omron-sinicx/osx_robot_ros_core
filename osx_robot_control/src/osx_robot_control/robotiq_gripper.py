@@ -67,7 +67,7 @@ class RobotiqGripper():
             self.gripper = None
             if self.use_gazebo_sim:
                 try:
-                    self.gripper = GripperController(namespace=self.ns, prefix=self.ns + '_', timeout=1.0, attach_link='osx_bots::%s_wrist_3_link' % self.ns)
+                    self.gripper = GripperController(namespace=self.ns, prefix=self.ns + '_', timeout=1.0)
                 except Exception as e:
                     rospy.logwarn("Fail to instantiate GripperController for simulation: " + str(e))
                     rospy.logwarn("Instantiating dummy gripper, hoping for moveit Fake controllers")

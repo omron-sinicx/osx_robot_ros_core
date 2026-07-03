@@ -1,0 +1,97 @@
+<?xml version="1.0"?>
+<!--
+  Self-contained UR5e description for a Gazebo (gz-sim / Harmonic) bringup with
+  gz_ros2_control. ROS 2 port of the ROS 1 scene.urdf.xacro, but without the
+  osx_scene_description / gazebo-classic dependencies so it can be brought up
+  independently (only depends on ur_description, which is an apt binary).
+
+  The arm kinematics/visuals come from ur_description's ur_robot macro; the
+  ros2_control + gz system plugin are wired here for gz_ros2_control/GazeboSimSystem.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="$(arg name)">
+
+  <xacro:arg name="name" default="ur5e"/>
+  <xacro:arg name="ur_type" default="ur5e"/>
+  <xacro:arg name="tf_prefix" default=""/>
+  <!-- absolute path to the controller_manager parameters file (passed by the launch) -->
+  <xacro:arg name="controllers_file" default=""/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+
+  <!-- The arm is fixed to the world. -->
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="$(arg name)"
+    tf_prefix="$(arg tf_prefix)"
+    parent="world"
+    joint_limits_parameters_file="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"
+    safety_limits="false"
+    safety_pos_margin="0.15"
+    safety_k_position="20">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <!-- ros2_control hardware: gz_ros2_control GazeboSimSystem.
+       Both position and velocity command interfaces are exposed so the same model
+       supports the trajectory controller (position) and the forward velocity
+       controller (velocity), matching ur_control's two control modes. -->
+  <xacro:property name="tf_prefix" value="$(arg tf_prefix)"/>
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <joint name="${tf_prefix}shoulder_pan_joint">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"><param name="initial_value">1.57</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="${tf_prefix}shoulder_lift_joint">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"><param name="initial_value">-2.1</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="${tf_prefix}elbow_joint">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"><param name="initial_value">1.4</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="${tf_prefix}wrist_1_joint">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"><param name="initial_value">-0.85</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="${tf_prefix}wrist_2_joint">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"><param name="initial_value">-1.57</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="${tf_prefix}wrist_3_joint">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </ros2_control>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(arg controllers_file)</parameters>
+    </plugin>
+  </gazebo>
+
+</robot>
