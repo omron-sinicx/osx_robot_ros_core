@@ -54,7 +54,7 @@ Visualization Manager:
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
       Value: true
-    - Alpha: 0.800000011920929
+    - Alpha: 0.8999999761581421
       Class: rviz/RobotModel
       Collision Enabled: false
       Enabled: true
@@ -95,6 +95,15 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+        osx_ground:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        pestle_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         shoulder_link:
           Alpha: 1
           Show Axes: false
@@ -104,17 +113,7 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        tool_exchanger:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         upper_arm_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wipe_holder:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -165,15 +164,15 @@ Visualization Manager:
           Value: false
         gripper_tip_link:
           Value: true
+        osx_ground:
+          Value: false
+        pestle_link:
+          Value: false
         shoulder_link:
           Value: false
         tool0:
-          Value: true
-        tool_exchanger:
           Value: false
         upper_arm_link:
-          Value: false
-        wipe_holder:
           Value: false
         world:
           Value: false
@@ -182,7 +181,7 @@ Visualization Manager:
         wrist_2_link:
           Value: false
         wrist_3_link:
-          Value: false
+          Value: true
       Marker Alpha: 1
       Marker Scale: 0.10000000149011612
       Name: TF
@@ -191,30 +190,29 @@ Visualization Manager:
       Show Names: true
       Tree:
         world:
-          base_link:
-            base:
-              {}
-            base_link_inertia:
-              shoulder_link:
-                upper_arm_link:
-                  forearm_link:
-                    wrist_1_link:
-                      wrist_2_link:
-                        wrist_3_link:
-                          ee_link:
-                            {}
-                          flange:
-                            tool0:
-                              gripper_tip_link:
+          osx_ground:
+            base_link:
+              base:
+                {}
+              base_link_inertia:
+                shoulder_link:
+                  upper_arm_link:
+                    forearm_link:
+                      wrist_1_link:
+                        wrist_2_link:
+                          wrist_3_link:
+                            ee_link:
+                              pestle_link:
                                 {}
-                              tool_exchanger:
-                                wipe_holder:
+                            flange:
+                              tool0:
+                                gripper_tip_link:
                                   {}
       Update Interval: 0
       Value: true
   Enabled: true
   Global Options:
-    Background Color: 197; 197; 197
+    Background Color: 48; 48; 48
     Default Light: true
     Fixed Frame: world
     Frame Rate: 30
@@ -240,7 +238,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 1.2031004428863525
+      Distance: 1.0072021484375
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -248,17 +246,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -0.17211583256721497
-        Y: 0.17707978188991547
-        Z: 0.6123396158218384
+        X: 0.4940493404865265
+        Y: 0.3551309406757355
+        Z: 0.03314463794231415
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: -0.04979749768972397
+      Pitch: 0.2147969752550125
       Target Frame: <Fixed Frame>
-      Yaw: 1.6035703420639038
+      Yaw: 0.39355772733688354
     Saved: ~
 Window Geometry:
   Displays:

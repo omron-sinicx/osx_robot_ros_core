@@ -7,10 +7,7 @@ Usage:
     python replay_episode.py
 
     # Select episode and dataset dir:
-    python replay_episode.py dataset.dataset.episode_idx=3
-
-    # Point to a different env config:
-    python replay_episode.py +eval.env_config=/path/to/data_collection.yaml
+    python replay_episode.py dataset.episode_idx=3
 
 Controls:
     Enter  - confirm start of replay (after reset prompt)
@@ -20,12 +17,10 @@ Controls:
 import logging
 import signal
 import sys
-import time
 import timeit
 from pathlib import Path
 
 import numpy as np
-import torch
 import tqdm
 
 import hydra
@@ -98,18 +93,8 @@ def build_env_action(frame: dict, action_type: str, replay_action_keys: list) ->
         env_action["action.position"] = frame_np["action.position"]
         env_action["action.orientation"] = transformations.quaternion_from_ortho6(frame_np["action.rotation_ortho6"])
         env_action["action.stiffness_diag"] = frame_np["action.stiffness_diag"]
-    elif action_type == "virtual_target_actions":
-        env_action["action.virtual_target_position"] = frame_np["action.virtual_target_position"]
-        env_action["action.virtual_target_orientation"] = transformations.quaternion_from_ortho6(frame["action.virtual_target_orientation"])
-        env_action["action.stiffness_diag"] = frame_np["action.stiffness_diag"]
-    elif action_type == "factored_actions":
-        env_action["action.ref_position"] = frame_np["action.ref_position"]
-        env_action["action.ref_rotation_ortho6"] = frame_np["action.ref_rotation_ortho6"]
-        env_action["action.contact_direction"] = frame_np["action.contact_direction"]
-        env_action["action.normal_force"] = frame_np["action.normal_force"]
-        env_action["action.normal_torque"] = frame_np["action.normal_torque"]
-        env_action["action.estimated_stiffness"] = frame_np["action.estimated_stiffness"]
-
+    else:
+        raise ValueError(f"Invalid action type: {action_type}")
     return env_action
 
 
@@ -119,8 +104,8 @@ def build_env_action(frame: dict, action_type: str, replay_action_keys: list) ->
 
 @hydra.main(
     version_base=None,
-    config_path="../../../../../dependencies/comet/configs",
-    config_name="test_wipe_osx",
+    config_path="../../config/hydra",
+    config_name="test_task",
 )
 def main(cfg: DictConfig) -> None:
     output_dir = Path(HydraConfig.get().runtime.output_dir)
@@ -133,21 +118,21 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # Load dataset
     # ------------------------------------------------------------------
-    repo_id = cfg.dataset.dataset.repo_id
+    repo_id = cfg.dataset.repo_id
     if isinstance(repo_id, (list, ListConfig)):
         repo_id = str(repo_id[0])
 
-    dataset_root = Path(cfg.dataset.dataset.dir) / repo_id
+    dataset_root = Path(cfg.dataset.dir) / repo_id
     if not dataset_root.exists():
         raise FileNotFoundError(f"Dataset directory not found: {dataset_root}")
 
     logger.info(f"Loading dataset: {repo_id} from {dataset_root}")
     dataset = LeRobotDataset(repo_id, root=dataset_root, video_backend="pyav", use_videos=False)
 
-    fps = cfg.dataset.dataset.fps
+    fps = cfg.dataset.fps
     sleep_time = 1.0 / fps
 
-    episode_idx = int(cfg.dataset.dataset.episode_idx)
+    episode_idx = int(cfg.dataset.episode_idx)
     num_episodes = dataset.meta.total_episodes
     logger.info(f"Dataset has {num_episodes} episodes | replaying episode {episode_idx}")
 
@@ -167,23 +152,12 @@ def main(cfg: DictConfig) -> None:
     input(f"Press Enter to continue...")
 
     # ------------------------------------------------------------------
-    # Load env config and build FDCCEnv
+    # Build FDCCEnv from Hydra config (dataset + controller groups)
     # ------------------------------------------------------------------
-    env_config_path = OmegaConf.select(cfg, "eval.env_config", default=None)
-    if env_config_path is None:
-        env_config_path = Path(__file__).parent.parent / "config" / "data_collection.yaml"
-        logger.info(f"eval.env_config not set, falling back to: {env_config_path}")
-    else:
-        env_config_path = Path(env_config_path)
-
-    logger.info(f"Loading env config from: {env_config_path}")
-    raw_env_cfg = OmegaConf.load(env_config_path)
-    env_cfg = raw_env_cfg.get("env", raw_env_cfg) if hasattr(raw_env_cfg, "get") else raw_env_cfg
-
     rospy.init_node("replay_episode", anonymous=False)
     logger.info("ROS node initialized")
 
-    env = FDCCEnv(config=env_cfg, use_torch_for_cameras=False)
+    env = FDCCEnv(config=cfg, use_torch_for_cameras=False)
 
     # ------------------------------------------------------------------
     # FT Visualizer

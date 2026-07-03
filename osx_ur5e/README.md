@@ -1,6 +1,98 @@
 # UR5e ROS Package
 
-This package provides ROS integration for controlling the UR5e robot arm.
+ROS integration for the UR5e arm: bringup, teleop data collection (LeRobot), replay, and COMET policy evaluation.
+
+# Workspaces
+- catkin_ws
+- underlay_ws
+
+# Important packages
+- catkin_ws/osx_ur5e
+    - connect to the robot `roslaunch osx_ur5e connect_real_robot.launch`
+    - connect to cameras `roslaunch osx_ur5e camera_bringup.launch`
+- catkin_ws/osx_gello
+    - connect to the robot `roslaunch osx_gello dynamixel_controllers.launch use_rviz:=0 enable_gravity_compensation:=1`
+
+# Data Collection
+Command:
+`rosrun osx_ur5e data_collection.py --config config/data_collection.yaml --task "Wipe the table" --num-episodes 5 --resume`
+
+## LeRobot pipeline
+
+All three scripts use [Hydra](https://hydra.cc/). **Data collection** and **replay** load configs from `config/hydra/`. **Policy evaluation** loads a COMET eval config from `dependencies/comet/configs/` (must still define `dataset` and `controller` for `FDCCEnv`).
+
+Prerequisites: robot in Remote mode, `connect_real_robot.launch` (+ cameras for collection).
+
+### `data_collection.py`
+
+Teleoperate with Gello and save a LeRobot dataset.
+
+```bash
+rosrun osx_ur5e data_collection.py
+rosrun osx_ur5e data_collection.py --config-name=my_task dataset.num_episodes=10
+```
+
+| Key | Meaning |
+|-----|---------|
+| `Enter` | End episode early (save) |
+| `r` | Discard episode, re-record |
+| `q` | Stop and finalize dataset |
+
+Writes to `{dataset.dir}/{repo_id}/`. Saves resolved Hydra config under `meta/hydra_config.yaml`.
+
+### `replay_episode.py`
+
+Replay one recorded episode on the real robot via `FDCCEnv` (open-loop).
+
+```bash
+rosrun osx_ur5e replay_episode.py
+rosrun osx_ur5e replay_episode.py dataset.episode_idx=3
+```
+
+Uses `dataset.replay` (e.g. `raw_actions`) and the matching action group (`dataset.raw_actions`). Press `Enter` to start after reset.
+
+### `evaluate_policy.py`
+
+Run a trained COMET diffusion policy on the robot via `FDCCEnv`.
+
+```bash
+rosrun osx_ur5e evaluate_policy.py
+rosrun osx_ur5e evaluate_policy.py eval.num_rollouts=5 eval.max_timesteps=500
+```
+
+Checkpoint path comes from the COMET config (`eval.base.load_ckpt`). Logs and plots go to Hydra’s output directory.
+
+### Config layout (`config/hydra/`)
+
+| File | Role |
+|------|------|
+| `<task>.yaml` | Task/dataset: `repo_id`, `dir`, `fps`, cameras, states/actions, replay keys |
+| `controller/ur5e.yaml` | Robot: FDCC gains, safety limits, `init_qpos` |
+
+Composed config shape (what the code reads):
+
+- `cfg.dataset.*` — dataset path, features, replay settings  
+- `cfg.controller.*` — arm control and `controller.safety_parameters`
+
+Example default: `test_task.yaml` + `defaults: [controller: ur5e, _self_]`.
+
+### New task YAML
+
+1. Copy `config/hydra/test_task.yaml` → `config/hydra/my_task.yaml`.
+2. Edit at least:
+   - `dataset.repo_id` — list with one ID, e.g. `[my_task]`
+   - `dataset.task` — language instruction stored in frames
+   - `dataset.dir` / `dataset.root` — where data is stored
+   - `dataset.num_episodes`, `episode_time_s`, `fps`
+   - `dataset.cameras` — names must match live camera topics
+3. Adjust `states` / `actions` only if you change what you log.
+4. For replay, set `dataset.replay` and the matching block (e.g. `raw_actions`).
+5. Tune `config/hydra/controller/ur5e.yaml` for a new cell (`init_qpos`, workspace/safety) or add `controller/my_robot.yaml` and set `defaults: [controller: my_robot, _self_]`.
+6. Run with `--config-name=my_task`.
+
+CLI overrides: `dataset.fps=30`, `controller.stiffness=1000`, etc.
+
+---
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)

@@ -179,7 +179,7 @@ def record_episode(
     cfg: DictConfig,
     events: dict,
 ) -> None:
-    ds_cfg = cfg.dataset.dataset
+    ds_cfg = cfg.dataset
     safety_cfg = cfg.controller.safety_parameters
     dt = 1.0 / ds_cfg.fps
     total_steps = math.ceil(ds_cfg.episode_time_s * ds_cfg.fps)
@@ -240,19 +240,16 @@ def record_episode(
     arm.activate_joint_trajectory_controller()
 
 
-def wait_for_reset(arm, gello, safety_cfg, reset_time_s: float, events: dict) -> None:
+def wait_for_reset(reset_time_s: float, events: dict) -> None:
     """Countdown during environment reset, interruptible by Enter."""
     start = time.perf_counter()
-    arm.activate_cartesian_controller()
     while time.perf_counter() - start < reset_time_s:
         if events["exit_early"] or events["stop"] or rospy.is_shutdown():
             events["exit_early"] = False
             break
         remaining = reset_time_s - (time.perf_counter() - start)
-        set_action(arm, gello, safety_cfg)
         print(f"\r  Reset: {remaining:.0f}s remaining (Enter to skip)  ", end="", flush=True)
-        rospy.sleep(0.1)
-    arm.activate_joint_trajectory_controller()
+        rospy.sleep(0.5)
     print()
 
 
@@ -270,8 +267,8 @@ def wait_for_keypress_reset(events: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-@hydra.main(config_path="/root/osx-ur/dependencies/comet/configs",
-            config_name="blackboard_wipe",
+@hydra.main(config_path="../../config/hydra",
+            config_name="test_task",
             version_base=None)
 def main(cfg: DictConfig) -> None:
 
@@ -279,8 +276,8 @@ def main(cfg: DictConfig) -> None:
     controller_cfg = cfg.controller
     features = build_features(ds_cfg)
     num_camera_threads = ds_cfg.image_writer.threads_per_camera * len(ds_cfg.cameras)
-    repo_id = ds_cfg.dataset.repo_id[0]
-    dataset_dir = Path(ds_cfg.dataset.dir) / repo_id
+    repo_id = ds_cfg.repo_id[0]
+    dataset_dir = Path(ds_cfg.dir) / repo_id
 
     rospy.init_node("data_collection")
 
@@ -309,7 +306,7 @@ def main(cfg: DictConfig) -> None:
         else None
     )
 
-    if ds_cfg.dataset.overwrite or not dataset_dir.exists():
+    if ds_cfg.overwrite or not dataset_dir.exists():
         if dataset_dir.exists() and dataset_dir.is_dir():
             confirm = input(f"Dataset directory {dataset_dir} already exists. Overwrite? (y/n): ")
             if confirm.strip().lower() != "y":
@@ -320,10 +317,10 @@ def main(cfg: DictConfig) -> None:
         log.info("Creating dataset: %s", repo_id)
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
-            fps=ds_cfg.dataset.fps,
+            fps=ds_cfg.fps,
             features=features,
             root=dataset_dir,
-            robot_type=ds_cfg.dataset.robot_type,
+            robot_type=ds_cfg.robot_type,
             use_videos=bool(ds_cfg.cameras),
             image_writer_processes=ds_cfg.image_writer.num_processes,
             image_writer_threads=num_camera_threads,
@@ -348,11 +345,11 @@ def main(cfg: DictConfig) -> None:
     wait_for_keypress_reset(events)
     try:
         recorded = 0
-        while recorded < ds_cfg.dataset.num_episodes and not events["stop"] and not rospy.is_shutdown():
+        while recorded < ds_cfg.num_episodes and not events["stop"] and not rospy.is_shutdown():
             log.info(
                 "Episode %d/%d  [Enter=end episode, r=redo, q=quit]",
                 recorded + 1,
-                ds_cfg.dataset.num_episodes,
+                ds_cfg.num_episodes,
             )
             record_episode(arm, gello, image_recorder, dataset, cfg, events)
 
@@ -366,17 +363,13 @@ def main(cfg: DictConfig) -> None:
                 events["rerecord"] = False
                 dataset.clear_episode_buffer()
                 wait_for_keypress_reset(events)
-                wait_for_reset(arm, gello, cfg.controller.safety_parameters, ds_cfg.dataset.reset_time_s, events)
-                wait_for_keypress_reset(events)
                 continue
 
             dataset.save_episode()
             recorded += 1
             log.info("Saved episode %d (%d total in dataset)", recorded, dataset.num_episodes)
 
-            if recorded < ds_cfg.dataset.num_episodes and not events["stop"]:
-                wait_for_keypress_reset(events)
-                wait_for_reset(arm, gello, cfg.controller.safety_parameters, ds_cfg.dataset.reset_time_s, events)
+            if recorded < ds_cfg.num_episodes and not events["stop"]:
                 wait_for_keypress_reset(events)
     finally:
         log.info("Finalizing dataset...")

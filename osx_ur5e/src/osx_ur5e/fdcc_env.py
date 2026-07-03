@@ -1,20 +1,11 @@
-from comet.common.utils.vt_utils import (
-    process_factored_action_dict,
-    compute_directional_stiffness_diagonal,
-)
-from comet.common.datasets.postprocess_utils import load_characteristic_length
+from comet.common.utils.vt_utils import process_factored_action_dict
 import rospy
 import numpy as np
-from pathlib import Path
 from omegaconf import DictConfig
 
 from osx_ur5e.base_env import BaseEnv
 from osx_ur5e.timestep import TimeStep, STEP_MID, STEP_LAST
 from ur_control import transformations
-
-
-STIFFNESS_REPRESENTATIONS = ['cholesky', 'diag']
-
 
 class FDCCEnv(BaseEnv):
     """
@@ -24,44 +15,27 @@ class FDCCEnv(BaseEnv):
     def __init__(self, config: DictConfig, use_torch_for_cameras=False):
         super().__init__(config, use_torch_for_cameras)
 
+        self.last_stiffness_command_stamp = 0.0
         self.last_stiffness_params = np.zeros(6)
         self.current_waypoint_index = 0
-
-        self.last_compliance_stiffness = 0.0
 
     def load_params(self, config):
         super().load_params(config)
 
-        # Parameters
-        self.control_frequency = config.dataset.dataset.fps
+        self.control_frequency = config.dataset.fps
         self.dt = 1. / self.control_frequency
 
         self.cam_names = config.dataset.cameras.keys()
         rospy.loginfo(f"Cameras to record from: {self.cam_names}")
+
+        safety = config.controller.safety_parameters
+        self.max_force_torque = safety.max_force_torque
+        self.translation_stiffness_limits = safety.stiffness_limits.translation
+        self.rotation_stiffness_limits = safety.stiffness_limits.rotation
+        self.max_delta_translation = safety.max_delta_translation
+        self.max_delta_rotation = np.deg2rad(safety.max_delta_rotation)
         self.controller_config = config.controller
-        self.max_force_torque = self.controller_config.safety_parameters.max_force_torque
-        self.translation_stiffness_limits = self.controller_config.safety_parameters.stiffness_limits.translation
-        self.rotation_stiffness_limits = self.controller_config.safety_parameters.stiffness_limits.rotation
-        self.max_delta_translation = self.controller_config.safety_parameters.max_delta_translation
-        self.max_delta_rotation = np.deg2rad(self.controller_config.safety_parameters.max_delta_rotation)
-        self.initial_config = self.controller_config.init_qpos
-
-        self.actions_as_deltas = self.controller_config.actions_as_deltas
-
-        self.load_characteristic_length(config)
-
-    def load_characteristic_length(self, config):
-        """Read characteristic_length from the dataset's info.json, with fallback."""
-        try:
-            from lerobot.datasets.utils import load_info
-            dataset_dir = Path(config.dataset.dataset.dir) / config.dataset.dataset.repo_id[0]
-            info = load_info(dataset_dir)
-            self.characteristic_length = load_characteristic_length(info)
-            rospy.loginfo(f"characteristic_length={self.characteristic_length} (from dataset info.json)")
-        except Exception as e:
-            self.characteristic_length = 0.1
-            rospy.logwarn(f"Could not read characteristic_length from dataset: {e}. "
-                          f"Using default={self.characteristic_length}")
+        self.actions_as_deltas = config.controller.actions_as_deltas
 
     def set_controller_parameters(self):
         p_gains = self.controller_config['p_gains']
@@ -118,52 +92,21 @@ class FDCCEnv(BaseEnv):
             Prepare the action for the controller.
         """
         if "action.contact_direction" in action:  # FVT mode
-            self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
-            controller_action = process_factored_action_dict(action,
-                                                             default_stiffness=self.controller_config.stiffness,
-                                                             default_stiffness_rot=self.controller_config.stiffness,
-                                                             characteristic_length=self.characteristic_length,
-                                                             use_isotropic_stiffness=False,
-                                                             orientation_representation="quaternion",
-                                                             full_stiffness_matrix=True)
-        elif "action.virtual_target_position" in action:  # VT mode
-            self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
-            vt_pos = action["action.virtual_target_position"]
-            vt_rot_ortho6 = action["action.virtual_target_rotation"]
-            estimated_stiffness = action["action.estimated_stiffness"]
-
-            stiffness_val = float(estimated_stiffness[0]) if np.ndim(estimated_stiffness) > 0 else float(estimated_stiffness)
-
-            if "action.ref_position" in action:
-                ref_position = action["action.ref_position"]
-                ref_rotation_ortho6 = action["action.ref_rotation_ortho6"]
-            else:
-                current_eef = self.arm.end_effector()
-                ref_position = current_eef[:3]
-                ref_rotation_ortho6 = transformations.ortho6_from_quaternion(current_eef[3:])
-
-            stiffness_matrix = compute_directional_stiffness_diagonal(
-                position=ref_position,
-                virtual_target_position=vt_pos,
-                estimated_stiffness=stiffness_val,
-                default_stiffness=self.controller_config.stiffness,
-                default_stiffness_rot=self.controller_config.stiffness,
-                rotation_ortho6=ref_rotation_ortho6,
-                virtual_target_rotation_ortho6=vt_rot_ortho6,
-                full_stiffness_matrix=True,
-            )
-
-            vt_quat = transformations.quaternion_from_ortho6(vt_rot_ortho6)
-
+            fvt_action = process_factored_action_dict(action,
+                                                      default_stiffness=self.controller_config.stiffness,
+                                                      default_stiffness_rot=self.controller_config.stiffness,
+                                                      characteristic_length=0.1,
+                                                      use_isotropic_stiffness=False,
+                                                      controller_type="variable_kp",
+                                                      orientation_representation="quaternion")
             controller_action = {
-                "action.position": vt_pos,
-                "action.orientation": vt_quat,
-                "action.stiffness_diag": stiffness_matrix,
+                "action.position": fvt_action[0:3],
+                "action.orientation": fvt_action[3:7],
+                "action.stiffness_diag": fvt_action[7:13],
             }
         elif "action.position" in action and "action.orientation" in action:  # raw_actions mode
-            self.last_compliance_stiffness = action["action.stiffness_diag"][0]
             controller_action = action
-        else:
+        else:  # TODO implement VT mode
             raise ValueError(f"Invalid action: {action}")
         return controller_action
 
@@ -171,19 +114,18 @@ class FDCCEnv(BaseEnv):
         """
             actions: dictionary of actions for each robot
         """
-        stiffness_matrix = np.asarray(action['action.stiffness_diag'])
-        stiffness_flat = stiffness_matrix.flatten()
-        if stiffness_flat.size == 6:
-            stiffness_diag = stiffness_flat
-        elif stiffness_flat.size == 36:
-            stiffness_diag = np.diag(stiffness_matrix)
-        else:
-            raise ValueError(f"Invalid stiffness matrix size: {stiffness_flat.size}")
+        stiff_trans = action['action.stiffness_diag'][:3]
+        stiff_rot = action['action.stiffness_diag'][3:]
 
-        # Only update the stiffness if the change is significant
-        if not np.all(np.isclose(self.last_stiffness_params, stiffness_diag, atol=5.0)):
-            self.arm.update_stiffness(stiffness_flat)
-            self.last_stiffness_params = np.copy(stiffness_diag)
+        stiff_act = np.concatenate([stiff_trans, stiff_rot]).astype(np.int64)
+
+        # Cap the bandwidth to change the controller's parameters to 40hz and only if the change is significant
+        # TODO: make this more robust
+        if rospy.get_time() - self.last_stiffness_command_stamp > 0.025 and \
+                not np.all(np.isclose(self.last_stiffness_params, stiff_act, atol=5.0)):
+            self.arm.update_stiffness(stiff_act)
+            self.last_stiffness_params = np.copy(stiff_act)
+            self.last_stiffness_command_stamp = rospy.get_time()
 
         action_translation = action['action.position']
         action_rotation = action['action.orientation']
@@ -214,14 +156,8 @@ class FDCCEnv(BaseEnv):
 
             returns the clipped delta translation and delta orientation
         """
+
         clipped_delta_translation = np.clip(delta_translation, -self.max_delta_translation, self.max_delta_translation)
         clipped_delta_orientation = np.clip(delta_orientation, -self.max_delta_rotation, self.max_delta_rotation)
-
-        if not np.allclose(clipped_delta_translation, delta_translation) or not np.allclose(clipped_delta_orientation, delta_orientation):
-            rospy.logwarn_throttle(1,
-                                   f"Delta actions clipped!! (delta > max_delta):\n"
-                                   f"  translation: {delta_translation} -> {clipped_delta_translation}\n"
-                                   f"  orientation: {delta_orientation} -> {clipped_delta_orientation}"
-                                   )
 
         return clipped_delta_translation, clipped_delta_orientation
