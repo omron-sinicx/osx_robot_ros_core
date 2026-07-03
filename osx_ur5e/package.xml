@@ -3,12 +3,15 @@
 <package format="3">
   <name>osx_ur5e</name>
   <version>0.1.0</version>
-  <description>Single UR5e configuration and a self-contained Gazebo (gz) bringup (ROS 2 port).</description>
+  <description>Single UR5e configuration, gz-sim bringup, and FDCC environment (ROS 2 port).</description>
 
   <maintainer email="cristian.beltran@sinicx.com">Cristian Beltran</maintainer>
   <license>BSD</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>ur_control</depend>
 
   <!-- description / bringup -->
   <exec_depend>ur_description</exec_depend>
@@ -24,10 +27,15 @@
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>forward_command_controller</exec_depend>
 
-  <!-- control library used to drive the arm -->
-  <exec_depend>ur_control</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-omegaconf</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <build_type>ament_python</build_type>
   </export>
 </package>
