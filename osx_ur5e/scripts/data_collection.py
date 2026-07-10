@@ -188,6 +188,7 @@ def record_episode(
     dt = 1.0 / ds_cfg.fps
     total_steps = math.ceil(ds_cfg.episode_time_s * ds_cfg.fps)
 
+    arm.dashboard_services.activate_ros_control_on_ur()
     arm.activate_joint_trajectory_controller()
     arm.set_joint_positions(positions=cfg.controller.init_qpos, target_time=2.0, wait=True)
 

@@ -53,7 +53,7 @@
     <arg name="enable_depth" value="$(arg enable_depth)" />
   </include> -->
 
-  <include file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
+  <!-- <include file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
     <arg name="time" value="2" />
     <arg name="pkg" value="realsense2_camera" />
     <arg name="file" value="rs_camera.launch" />
@@ -80,6 +80,6 @@
   <arg name="enable_sync" default="true" />
   <include if="$(arg enable_sync)" file="$(find multi_camera_sync)/launch/sync.launch">
     <arg name="config" value="$(find multi_camera_sync)/config/ur5e_front_wrist.yaml" />
-  </include>
+  </include> -->
 
 </launch>

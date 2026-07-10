@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<launch>
+    
+    <include file="$(find osx_ur5e)/launch/gopro_bringup.launch"/>
+    <include file="$(find osx_ur5e)/launch/camera_bringup.launch"/>
+</launch>

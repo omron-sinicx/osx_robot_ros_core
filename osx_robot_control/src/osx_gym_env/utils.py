@@ -5,6 +5,39 @@ import torch
 import rospy
 from ur_control import transformations
 
+_REALSENSE_IMAGE_TOPIC = '/{cam_name}/color/image_raw'
+_USB_CAM_IMAGE_TOPIC = '/{cam_name}/image_raw'
+
+
+def _resolve_image_topic(cam_name, sync_ns=None, wait_s=2.0):
+    """Pick RealSense vs usb_cam/GoPro topic layout for a camera."""
+    if sync_ns:
+        return f'/{sync_ns}/{cam_name}/image_raw'
+
+    candidates = [
+        _REALSENSE_IMAGE_TOPIC.format(cam_name=cam_name),
+        _USB_CAM_IMAGE_TOPIC.format(cam_name=cam_name),
+    ]
+
+    deadline = rospy.get_time() + wait_s
+    while not rospy.is_shutdown():
+        published = {topic for topic, _ in rospy.get_published_topics()}
+        for topic in candidates:
+            if topic in published:
+                return topic
+        if rospy.get_time() >= deadline:
+            break
+        rospy.sleep(0.1)
+
+    rospy.logwarn(
+        'ImageRecorder: no image topic found for %s within %.1fs; '
+        'defaulting to %s',
+        cam_name,
+        wait_s,
+        candidates[0],
+    )
+    return candidates[0]
+
 
 class ImageRecorder:
     def __init__(
@@ -29,22 +62,23 @@ class ImageRecorder:
         self.data_type = data_type
         self.max_image_age_s = max_image_age_s
         self.sync_ns = sync_ns
-        if image_topic_template is None:
-            if sync_ns:
-                image_topic_template = '/{sync_ns}/{cam_name}/image_raw'
-            else:
-                image_topic_template = '/{cam_name}/color/image_raw'
         self.image_topic_template = image_topic_template
+        self.camera_topics = {}
         if init_node:
             rospy.init_node('image_recorder', anonymous=True)
         for cam_name in self.camera_names:
             setattr(self, f'{cam_name}_msg', None)
             setattr(self, f'{cam_name}_received_at', None)
             setattr(self, f'{cam_name}_timestamps', deque(maxlen=50))
-            topic = self.image_topic_template.format(
-                sync_ns=sync_ns or '',
-                cam_name=cam_name,
-            )
+            if image_topic_template is None:
+                topic = _resolve_image_topic(cam_name, sync_ns=sync_ns)
+            else:
+                topic = image_topic_template.format(
+                    sync_ns=sync_ns or '',
+                    cam_name=cam_name,
+                )
+            self.camera_topics[cam_name] = topic
+            rospy.loginfo('ImageRecorder: %s -> %s', cam_name, topic)
             rospy.Subscriber(
                 topic,
                 Image,
@@ -155,6 +189,7 @@ class ImageRecorder:
         if len(stamps) >= 2:
             diagnostics['max_stamp_skew_s'] = max(stamps) - min(stamps)
         diagnostics['sync_ns'] = self.sync_ns
+        diagnostics['camera_topics'] = dict(self.camera_topics)
         return diagnostics
 
     def print_diagnostics(self):
