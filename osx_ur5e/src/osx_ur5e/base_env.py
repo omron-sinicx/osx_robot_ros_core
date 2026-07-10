@@ -1,15 +1,13 @@
-import collections
 import rospy
 import numpy as np
 from omegaconf import DictConfig
 
 from osx_ur5e.timestep import TimeStep, STEP_FIRST
 
-
-from osx_gym_env.utils import ImageRecorder
+from osx_ur5e.observation_assembler import ObservationAssembler
+from osx_ur5e.sample_feeders import RosSampleFeeder
 
 from ur_control.arm import Arm
-from ur_control import transformations
 from ur_control.constants import ExecutionResult
 from ur_control.fzi_cartesian_compliance_controller import CompliantController
 
@@ -21,7 +19,7 @@ class BaseEnv:
     Forward Dynamics Compliant Control Environment
     """
 
-    def __init__(self, config: DictConfig, use_torch_for_cameras=False):
+    def __init__(self, config: DictConfig):
         self.load_params(config)
 
         if self.config.controller.type == "fdcc":
@@ -39,12 +37,15 @@ class BaseEnv:
         self.arm.dashboard_services.activate_ros_control_on_ur()
 
         self.target_wrench = np.zeros(6)
-        self.image_recorder = ImageRecorder(
-            init_node=False,
-            camera_names=self.cam_names,
-            use_torch=use_torch_for_cameras,
-            sync_ns=getattr(self, "cameras_sync_ns", None),
-        )
+        # Shared observation contract: the same feeder+assembler pair the
+        # offline bag converter uses, fed by live topics (raw per-camera
+        # topics, hardware stamps - no /sync remapping).
+        self.feeder = RosSampleFeeder(camera_names=list(self.cam_names))
+        self.assembler = ObservationAssembler(self.arm.kdl, list(self.cam_names))
+        self.feeder.wait_until_fresh(max_age_s=1.0, timeout_s=5.0)
+        # comet's eval runner and artifacts reach the camera feed through
+        # this attribute (feeder.get_images() keeps that API).
+        self.image_recorder = self.feeder
 
         self.rate = rospy.Rate(self.control_frequency)
 
@@ -60,46 +61,19 @@ class BaseEnv:
         assert self.arm.dashboard_services.activate_ros_control_on_ur(), "Failed to activate ROS control on UR"
         self.arm.set_joint_positions(target_time=5.0, positions=self.initial_config, wait=True)
 
-    def get_eef_components(self):
-        eef_pos = self.get_eef_pose(orientation_representation='quaternion')
-        rot_ortho6 = transformations.ortho6_from_quaternion(eef_pos[3:])
-        axis_angle = transformations.axis_angle_from_quaternion(eef_pos[3:])
-        return {
-            "eef_pos.position": eef_pos[:3],
-            "eef_pos.quaternion": eef_pos[3:],
-            "eef_pos.rotation_axis_angle": axis_angle,
-            "eef_pos.rotation_ortho6": rot_ortho6,
-            "eef_pos.wrench": self.arm.get_wrench(),
-            "eef_pos.velocity": self.arm.end_effector_velocity(),
-        }
-
-    def get_eef_pose(self, orientation_representation='axis_angle'):
-        # get current end effector pose [x,y,z] + [quat(4)]
-        arm_pose = self.arm.end_effector()
-        rotation = None
-
-        if orientation_representation == 'axis_angle':
-            # convert quaternion to axis angle: [axis_angle(3)]
-            rotation = transformations.axis_angle_from_quaternion(arm_pose[3:])
-        elif orientation_representation == 'ortho6':
-            # convert quaternion to axis angle: [ortho6(6)]
-            rotation = transformations.ortho6_from_quaternion(arm_pose[3:])
-        elif orientation_representation == 'quaternion':
-            rotation = arm_pose[3:]
-        else:
-            raise ValueError(f'Unsupported orientation_representation: {orientation_representation}')
-
-        return np.concatenate([arm_pose[:3], rotation])
-
     def get_images(self):
-        return self.image_recorder.get_images()
+        return self.feeder.get_images()
 
     def get_observation(self):
-        obs = collections.OrderedDict()
-        obs.update(self.get_eef_components())
-        obs['qpos'] = self.arm.joint_angles()
-        obs['qvel'] = self.arm.joint_velocities()
-        return obs
+        """Latest observation via the shared assembler (grab-latest semantics).
+
+        Images are excluded here - the policy path pulls them itself through
+        format_real_robot_observations, and nothing downstream consumes
+        TimeStep.observation images.
+        """
+        samples = self.feeder.get_latest(["joint_states", "wrench"])
+        return self.assembler.assemble_observation(
+            samples, tick_time=rospy.get_time(), include_images=False)
 
     def get_reward(self):
         return 0

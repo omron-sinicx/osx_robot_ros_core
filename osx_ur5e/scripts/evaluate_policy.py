@@ -75,7 +75,7 @@ def main(cfg: DictConfig) -> None:
         adapter = build_policy_adapter(cfg)
         adapter.load(Path(cfg.eval.base.load_ckpt), policy_filename)
 
-        env = FDCCEnv(config=adapter.env_config, use_torch_for_cameras=False)
+        env = FDCCEnv(config=adapter.env_config)
 
         runner = RealRobotEvalRunner(
             cfg,

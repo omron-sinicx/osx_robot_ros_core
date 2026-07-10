@@ -21,8 +21,8 @@ class FDCCEnv(BaseEnv):
     Forward Dynamics Compliant Control Environment
     """
 
-    def __init__(self, config: DictConfig, use_torch_for_cameras=False):
-        super().__init__(config, use_torch_for_cameras)
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
 
         self.last_stiffness_params = np.zeros(6)
         self.current_waypoint_index = 0
@@ -37,7 +37,6 @@ class FDCCEnv(BaseEnv):
         self.dt = 1. / self.control_frequency
 
         self.cam_names = config.dataset.cameras.keys()
-        self.cameras_sync_ns = config.dataset.get("cameras_sync_ns", None)
         rospy.loginfo(f"Cameras to record from: {self.cam_names}")
         self.controller_config = config.controller
         self.max_force_torque = self.controller_config.safety_parameters.max_force_torque

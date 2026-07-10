@@ -6,8 +6,6 @@ import numpy as np
 import torch
 from torchvision import transforms
 
-from ur_control import transformations
-
 logger = logging.getLogger(__name__)
 
 
@@ -93,107 +91,60 @@ def _image_hwc_to_chw(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Cannot infer HWC/CHW layout for image shape {arr.shape}")
 
 
-def _get_fresh_camera_images(image_recorder, camera_names: list[str], max_wait_s: float = 2.0):
-    """Return camera images, retrying briefly when frames are stale or missing."""
-    if not camera_names:
-        return {}
-
-    if hasattr(image_recorder, "wait_for_fresh_images"):
-        last_images = image_recorder.wait_for_fresh_images(
-            camera_names=camera_names,
-            timeout_s=max_wait_s,
-        )
-    else:
-        import rospy
-
-        deadline = rospy.get_time() + max_wait_s
-        last_images = {}
-        while rospy.get_time() <= deadline and not rospy.is_shutdown():
-            last_images = image_recorder.get_images()
-            missing = [
-                cam_name
-                for cam_name in camera_names
-                if last_images.get(cam_name) is None
-            ]
-            if not missing:
-                return last_images
-            rospy.sleep(0.05)
-
-    missing = [cam for cam in camera_names if last_images.get(cam) is None]
-    if missing:
-        diagnostics = (
-            image_recorder.get_diagnostics()
-            if hasattr(image_recorder, "get_diagnostics")
-            else {}
-        )
-        details = ", ".join(
-            f"{cam}={diagnostics.get(cam, {})}" for cam in missing
-        )
-        raise RuntimeError(
-            "Camera image(s) unavailable (stale or not received yet): "
-            f"{missing}. Check camera topics and that streams are publishing. "
-            f"Diagnostics: {details}"
-        )
-    return last_images
-
-
 def format_real_robot_observations(
     arm,
-    image_recorder,
+    feeder,
     features_or_keys: dict | set[str],
     camera_shape: tuple,
 ) -> dict:
-    """Build a policy-ready observation dict from the real robot arm and cameras.
+    """Build a policy-ready observation dict from the live topic feeder.
 
-    Mirrors get_observations() in data_collection.py but returns torch tensors
-    in the same format expected by the COMET policy (float32 states, uint8 images).
+    Raw observations come from the shared ObservationAssembler - the exact
+    implementation the offline bag converter uses to build training data -
+    then get torch-ified into the format the COMET policy expects (float32
+    states, uint8 CHW images resized to training resolution).
 
     Args:
-        arm: CompliantController instance from FDCCEnv.
-        image_recorder: ImageRecorder instance from FDCCEnv.
+        arm: CompliantController from FDCCEnv (provides the kinematics).
+        feeder: RosSampleFeeder from FDCCEnv (env.image_recorder).
         features_or_keys: Feature dict from checkpoint or a set of observation key names.
         camera_shape: (H, W) to resize camera images to match training resolution.
 
     Returns:
         Dict mapping observation keys to torch tensors ready for policy.select_action().
     """
+    import rospy
+
+    from osx_ur5e.observation_assembler import ObservationAssembler
+
     wanted_keys = _obs_key_set(features_or_keys)
+    camera_names = _camera_names_from_obs_keys(wanted_keys)
 
-    eef = arm.end_effector()
-    eef_velocity = arm.end_effector_velocity()
+    image_keys = [f"images.{cam}" for cam in camera_names]
+    if image_keys and not feeder.wait_until_fresh(
+            max_age_s=1.0, timeout_s=2.0, keys=image_keys):
+        stale = [k for k in image_keys if feeder.age_s(k) > 1.0]
+        raise RuntimeError(
+            f"Camera image(s) unavailable (stale or not received yet): {stale}. "
+            "Check camera topics and that streams are publishing."
+        )
 
-    raw_obs = {
-        "observation.qpos":                    arm.joint_angles(),
-        "observation.qvel":                    arm.joint_velocities(),
-        "observation.eef.position":            eef[:3],
-        "observation.eef.linear_velocity":     eef_velocity[:3],
-        "observation.eef.angular_velocity":    eef_velocity[3:],
-        "observation.eef.rotation_ortho6":     transformations.ortho6_from_quaternion(eef[3:]),
-        "observation.eef.rotation_axis_angle": transformations.axis_angle_from_quaternion(eef[3:]),
-        "observation.ft":                      arm.get_wrench(),  # TODO (malek): check if this is in the world frame or the tool frame with cristian
-    }
+    assembler = ObservationAssembler(arm.kdl, camera_names)
+    samples = feeder.get_latest(["joint_states", "wrench"] + image_keys)
+    raw_obs = assembler.assemble_observation(samples, tick_time=rospy.get_time())
 
     obs = {}
-
+    resize_transform = transforms.Resize(camera_shape, antialias=True)
     for key, value in raw_obs.items():
-        if key in wanted_keys:
-            obs[key] = torch.tensor(np.array(value).flatten(), dtype=torch.float32)
-
-    if image_recorder is not None:
-        resize_transform = transforms.Resize(camera_shape, antialias=True)
-        camera_names = _camera_names_from_obs_keys(wanted_keys)
-        raw_images = _get_fresh_camera_images(image_recorder, camera_names)
-        for cam_name, image in raw_images.items():
-            feat_key = f"observation.images.{cam_name}"
-            if feat_key not in wanted_keys:
-                continue
-            if image is None:
-                raise RuntimeError(f"Camera '{cam_name}' returned no image after wait.")
-            image_chw = _image_hwc_to_chw(image)
+        if key not in wanted_keys:
+            continue
+        if key.startswith("observation.images."):
+            image_chw = _image_hwc_to_chw(value)
             if image_chw.dtype != np.uint8:
                 image_chw = np.clip(image_chw, 0, 255).astype(np.uint8)
-            image_tensor = torch.tensor(image_chw, dtype=torch.uint8)
-            obs[feat_key] = resize_transform(image_tensor)
+            obs[key] = resize_transform(torch.tensor(image_chw, dtype=torch.uint8))
+        else:
+            obs[key] = torch.tensor(np.array(value).flatten(), dtype=torch.float32)
 
     missing = wanted_keys - set(obs.keys())
     if missing:

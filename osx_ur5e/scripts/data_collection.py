@@ -42,7 +42,7 @@ from rich.progress import (
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from osx_gello.gello import Gello
-from osx_gym_env.utils import ImageRecorder
+from osx_ur5e.image_recorder import ImageRecorder
 from ur_control import transformations
 from ur_control.fzi_cartesian_compliance_controller import CompliantController
 
@@ -64,6 +64,17 @@ def build_features(cfg: DictConfig) -> dict:
             "shape": (cam_info.height, cam_info.width, cam_info.channels),
             "names": ["height", "width", "channels"],
         }
+        # Frame capture time (seconds, relative to episode start): the image's
+        # ROS header stamp minus start_ros. Same clock/axis as
+        # observation.frame_time, so vision aligns to state directly. NaN when
+        # the frame was missing/stale. Small value -> float32-safe. Kept out of
+        # the "observation.images." namespace so LeRobot does not treat it as a
+        # video stream.
+        features[f"observation.image_time.{cam_name}"] = {
+            "dtype": "float32",
+            "shape": (1,),
+            "names": None,
+        }
 
     for key, shape in cfg.states.items():
         features[key] = {
@@ -78,6 +89,17 @@ def build_features(cfg: DictConfig) -> dict:
             "shape": tuple(shape),
             "names": None,
         }
+
+    # Real wall-clock time of the frame, relative to episode start (seconds).
+    # LeRobot labels frames as uniform 1/fps; this records the *actual* time so
+    # loop jitter/overruns are visible and correctable at training time.
+    # Same clock/axis as observation.image_time, so vision-vs-state skew is
+    # simply frame_time - image_time.
+    features["observation.frame_time"] = {
+        "dtype": "float32",
+        "shape": (1,),
+        "names": None,
+    }
 
     return features
 
@@ -117,31 +139,40 @@ def start_keyboard_listener(events: dict):
 # Robot I/O
 # ---------------------------------------------------------------------------
 
-def get_observations(arm: CompliantController, image_recorder: ImageRecorder) -> dict:
-    eef = arm.end_effector()
-    eef_velocity = arm.end_effector_velocity()
+def get_observations(arm: CompliantController, ur_current_state: dict, image_recorder: ImageRecorder, start_ros: float = 0.0) -> dict:
+    eef = arm.end_effector(joint_angles=ur_current_state["joint_angles"])
+    eef_velocity = arm.end_effector_velocity(joint_angles=ur_current_state["joint_angles"],
+                                             joint_velocities=ur_current_state["joint_velocities"])
     obs = {
-        "observation.qpos":                    arm.joint_angles(),
-        "observation.qvel":                    arm.joint_velocities(),
+        "observation.qpos":                    ur_current_state["joint_angles"],
+        "observation.qvel":                    ur_current_state["joint_velocities"],
         "observation.eef.position":            eef[:3],
         "observation.eef.linear_velocity":     eef_velocity[:3],
         "observation.eef.angular_velocity":    eef_velocity[3:],
         "observation.eef.rotation_ortho6":     transformations.ortho6_from_quaternion(eef[3:]),
         "observation.eef.rotation_axis_angle": transformations.axis_angle_from_quaternion(eef[3:]),
-        "observation.ft":                      arm.get_wrench(),
+        "observation.ft":                      ur_current_state["wrench"],
     }
     if image_recorder is not None:
+        # Block briefly so we record a fresh frame (returns immediately when
+        # images are already recent, i.e. the normal 60fps case).
         if hasattr(image_recorder, "wait_for_fresh_images"):
-            images = image_recorder.wait_for_fresh_images(timeout_s=0.2)
-        else:
-            images = image_recorder.get_images()
+            image_recorder.wait_for_fresh_images(timeout_s=0.2)
+        images, stamps = image_recorder.get_images_with_stamp()
         obs.update({f"observation.images.{k}": v for k, v in images.items()})
+        # Record each frame's capture time relative to episode start (same axis
+        # as observation.frame_time) so vision-vs-state skew is measurable and
+        # correctable at training time.
+        for k in images:
+            stamp = stamps.get(k)
+            image_time = np.nan if stamp is None else stamp - start_ros
+            obs[f"observation.image_time.{k}"] = np.array([image_time], dtype=np.float32)
     return obs
 
 
-def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -> dict:
+def set_action(arm: CompliantController, gello: Gello, ur_current_state: dict, safety_cfg: DictConfig) -> dict:
     gello_joints = gello.joint_angles()
-    current_pose = arm.end_effector()
+    current_pose = arm.end_effector(joint_angles=ur_current_state["joint_angles"])
     target_pose = arm.end_effector(joint_angles=gello_joints)
     stiffness_diag = arm.current_stiffness
     delta_translation = target_pose[:3] - current_pose[:3]
@@ -175,6 +206,24 @@ def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -
 # Record loop
 # ---------------------------------------------------------------------------
 
+def _log_rate_diagnostics(frame_wall_times: list, target_fps: float) -> None:
+    """Report achieved loop-rate statistics for the episode.
+
+    Uses the recorded per-frame wall times to summarize jitter once, instead
+    of relying only on per-frame slow-loop warnings.
+    """
+    if len(frame_wall_times) < 3:
+        return
+    dts = np.diff(np.asarray(frame_wall_times))
+    hz = 1.0 / np.clip(dts, 1e-6, None)
+    p50, p5, p1 = np.percentile(hz, [50, 5, 1])
+    overruns = int(np.count_nonzero(dts > 1.5 / target_fps))
+    log.info(
+        "Rate: target %.0f Hz | median %.0f | p5 %.0f | p1 %.0f Hz | %d overruns (>1.5x dt)",
+        target_fps, p50, p5, p1, overruns,
+    )
+
+
 def record_episode(
     arm: CompliantController,
     gello: Gello,
@@ -187,6 +236,7 @@ def record_episode(
     safety_cfg = cfg.controller.safety_parameters
     dt = 1.0 / ds_cfg.fps
     total_steps = math.ceil(ds_cfg.episode_time_s * ds_cfg.fps)
+    rate = rospy.Rate(ds_cfg.fps)
 
     arm.dashboard_services.activate_ros_control_on_ur()
     arm.activate_joint_trajectory_controller()
@@ -212,14 +262,21 @@ def record_episode(
     with progress:
         task_id = progress.add_task("record", total=total_steps, hz=ds_cfg.fps)
         start_t = time.perf_counter()
+        start_ros = rospy.get_time()  # same clock as image_age, for frame_time
+        frame_wall_times = []
 
         while time.perf_counter() - start_t < ds_cfg.episode_time_s and not rospy.is_shutdown():
             if events["exit_early"] or events["stop"]:
                 events["exit_early"] = False
                 break
 
-            force_norm = np.linalg.norm(arm.get_wrench())
-            torque_norm = np.linalg.norm(arm.get_wrench()[3:])
+            ur_current_state = {
+                "joint_angles": arm.joint_angles(),
+                "joint_velocities": arm.joint_velocities(),
+                "wrench": arm.get_wrench(),
+            }
+            force_norm = np.linalg.norm(ur_current_state["wrench"][:3])
+            torque_norm = np.linalg.norm(ur_current_state["wrench"][3:])
             if force_norm > safety_cfg.max_force_torque[0] or torque_norm > safety_cfg.max_force_torque[1]:
                 log.warning("Force/torque norm is too high: %.2f/%.2f", force_norm, torque_norm)
                 events["exit_early"] = True
@@ -229,22 +286,30 @@ def record_episode(
             loop_start = time.perf_counter()
 
             all_values = {}
-            all_values.update(get_observations(arm, image_recorder))
-            all_values.update(set_action(arm, gello, safety_cfg))
+            all_values.update(get_observations(arm, ur_current_state, image_recorder, start_ros))
+            all_values.update(set_action(arm, gello, ur_current_state, safety_cfg))
             all_values = {k: v.astype(np.float32) for k, v in all_values.items()}
+            # Actual frame time (ROS clock, relative to episode start). Recording
+            # it means an occasional loop overrun is recoverable data, not a
+            # silent time-warp of the uniformly-labeled stream.
+            all_values["observation.frame_time"] = np.array(
+                [rospy.get_time() - start_ros], dtype=np.float32
+            )
 
             dataset.add_frame({**all_values, "task": ds_cfg.task})
+            frame_wall_times.append(time.perf_counter())
 
             elapsed = time.perf_counter() - loop_start
             sleep_time = dt - elapsed
             if sleep_time < 0:
                 log.warning("Loop running slow: %.1f Hz (target %d Hz)", 1.0 / elapsed, ds_cfg.fps)
             else:
-                rospy.sleep(sleep_time)
+                rate.sleep()
 
             actual_hz = 1.0 / max(time.perf_counter() - loop_start, 1e-6)
             progress.update(task_id, advance=1, hz=actual_hz)
 
+    _log_rate_diagnostics(frame_wall_times, ds_cfg.fps)
     arm.activate_joint_trajectory_controller()
 
 
