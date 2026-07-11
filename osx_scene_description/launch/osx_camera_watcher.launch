@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<launch>
+
+  <node name="camera_watcher" pkg="osx_vision" type="osx_camera_watcher.py" output="screen"/>
+
+</launch>

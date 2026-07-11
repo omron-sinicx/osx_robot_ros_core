@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+
+  <arg name="sim" default="false"/>
+
+  <include file="$(find osx_scene_description)/launch/gravity_compensation/gravity_compensation.launch">
+    <arg name="robot_name" value="a_bot"/>
+    <arg name="sim" value="$(arg sim)"/>
+  </include>
+
+  <include file="$(find osx_scene_description)/launch/gravity_compensation/gravity_compensation.launch">
+    <arg name="robot_name" value="b_bot"/>
+    <arg name="sim" value="$(arg sim)"/>
+  </include>
+
+</launch>

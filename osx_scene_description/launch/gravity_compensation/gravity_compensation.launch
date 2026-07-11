@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<launch>
+
+  <arg name="robot_name" default="a_bot"/>
+  <arg name="node_name" default="$(arg robot_name)_gravity_compensation"/>
+  <arg name="sim" default="false"/>
+  <arg name="calib_data_file" default="$(find osx_scene_description)/config/payload/$(arg robot_name)_ft_calib_data.yaml" unless="$(arg sim)"/>
+  <arg name="calib_data_file" default="$(find osx_scene_description)/config/payload/$(arg robot_name)_ft_calib_data_gz.yaml" if="$(arg sim)"/>
+  <arg name="ft_raw" default="/$(arg robot_name)/wrench"/>
+  <arg name="imu" default="/$(arg robot_name)/imu"/>
+  <arg name="ns" default="/$(arg robot_name)/wrench"/>
+  <arg name="gripper_com_child_frame_id" default="gripper_com"/>
+
+  <node name="$(arg robot_name)_fake_imu" pkg="ur_control" type="imu.py" args="-ns $(arg robot_name)" output="screen"/>
+
+  <node name="$(arg node_name)" pkg="gravity_compensation" type="gravity_compensation_node" cwd="node" respawn="false" output="screen">
+    <rosparam command="load" file="$(arg calib_data_file)"/>
+    <remap from="$(arg node_name)/ft_raw" to="$(arg ft_raw)" />
+    <remap from="$(arg node_name)/imu" to="$(arg imu)" />
+    <param name="ns" value="$(arg ns)"/>
+    <param name="gripper_com_child_frame_id" value="$(arg gripper_com_child_frame_id)"/>
+  </node>
+
+</launch>

@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<!--
+  This file launches the cameras on the robots. A scene camera is commented out at the end of the file.
+-->
+<launch>
+
+  <!-- WORKAROUND: Keep this block synced between the osx_bringup_camX/cameras files! -->
+  <!-- Synced block start -->
+  <!-- Camera parameters -->
+  <arg name="camera_name"	default="a_bot_inside_camera"/>
+  
+  <arg name="camera_serial_no"	default="636201000324"/>
+  <arg name="camera_fps"	default="15"/>
+  <arg name="depth_fps"	  default="$(arg camera_fps)"/>
+  <arg name="camera_width"	default="1280"/>
+  <arg name="camera_height"	default="720"/>
+  <arg name="initial_reset"	default="true"/>
+  <arg name="enable_depth"	default="true"/>
+  <arg name="calibration_mode"	default="false"/>
+  <!-- Synced block end -->
+
+  <param name="osx_vision_server/$(arg camera_name)" type="bool" value="true" />
+ 
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+    <arg name="camera"             value="$(arg camera_name)"/>
+    <arg name="serial_no"          value="$(arg camera_serial_no)"/>
+    <arg name="tf_prefix"          value="$(arg camera_name)"/>
+    <arg name="align_depth"        value="$(arg enable_depth)"/>
+    <arg name="fisheye_fps"        value="$(arg camera_fps)"/>
+    <arg name="depth_width"        value="$(arg camera_width)"/>
+    <arg name="depth_height"       value="$(arg camera_height)"/>
+    <arg name="depth_fps"          value="$(arg depth_fps)"/>
+    <arg name="color_fps"          value="$(arg camera_fps)"/>
+    <arg name="color_width"        value="$(arg camera_width)"/>
+    <arg name="color_height"       value="$(arg camera_height)"/>
+    <arg name="initial_reset"      value="$(arg initial_reset)"/>
+    <arg name="enable_infra1"      value="false"/>
+    <arg name="enable_infra2"      value="false"/>
+    <arg name="enable_depth"       value="$(arg enable_depth)"/>
+    <arg name="enable_pointcloud"  value="$(arg enable_depth)"/>
+    <arg name="publish_tf"         value="$(arg calibration_mode)"/>
+  </include>
+  
+  <group unless="$(arg calibration_mode)">
+    <include file="$(find osx_scene_description)/launch/publish_camera_calibration.launch">
+      <arg name="camera_name"	value="$(arg camera_name)"/>
+    </include>
+    <!-- <node name="dummy_calibrated_$(arg camera_name)" pkg="tf" type="static_transform_publisher"
+          args="0 0 0 0 0 0 $(arg camera_name)_bottom_screw_frame $(arg camera_name)_link 10"/> -->
+  </group>
+
+</launch>
