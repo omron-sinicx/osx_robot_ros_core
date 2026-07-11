@@ -60,7 +60,7 @@ The easiest way to set up the environment is using the provided Terminator termi
 1. **Launch the Docker Environment**
    ```bash
    cd ~/scu-hand-env
-   ./LAUNCH-TERMINATOR-TERMINAL.sh
+   make terminator
    ```
 
 2. **Start ROS Core**
@@ -74,9 +74,9 @@ The easiest way to set up the environment is using the provided Terminator termi
 
 ## Usage
 
-### Manual Connection (Alternative to the LAUNCH-TERMINATOR-TERMINAL Setup)
+### Manual Connection (Alternative to `make terminator`)
 
-If you're not using the provided LAUNCH-TERMINATOR-TERMINAL environment, you can connect manually on different terminals:
+If you're not using the provided Terminator layout, you can connect manually on different terminals:
 
 **Connect to UR5e Robot:**
 ```bash
