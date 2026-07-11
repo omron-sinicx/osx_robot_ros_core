@@ -42,6 +42,7 @@ from rich.progress import (
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from osx_gello.gello import Gello
+from osx_ur5e.action_limits import DeltaActionLimiter, limiter_from_safety_config
 from osx_ur5e.image_recorder import ImageRecorder
 from ur_control import transformations
 from ur_control.fzi_cartesian_compliance_controller import CompliantController
@@ -170,7 +171,8 @@ def get_observations(arm: CompliantController, ur_current_state: dict, image_rec
     return obs
 
 
-def set_action(arm: CompliantController, gello: Gello, ur_current_state: dict, safety_cfg: DictConfig) -> dict:
+def set_action(arm: CompliantController, gello: Gello, ur_current_state: dict,
+               safety_cfg: DictConfig, limiter: DeltaActionLimiter, dt: float) -> dict:
     gello_joints = gello.joint_angles()
     current_pose = arm.end_effector(joint_angles=ur_current_state["joint_angles"])
     target_pose = arm.end_effector(joint_angles=gello_joints)
@@ -178,9 +180,7 @@ def set_action(arm: CompliantController, gello: Gello, ur_current_state: dict, s
     delta_translation = target_pose[:3] - current_pose[:3]
     delta_rotation = transformations.quaternions_orientation_error(target_pose[3:], current_pose[3:])
 
-    max_delta_rotation = np.deg2rad(safety_cfg.max_delta_rotation)
-    clipped_delta_translation = np.clip(delta_translation, -safety_cfg.max_delta_translation, safety_cfg.max_delta_translation)
-    clipped_delta_orientation = np.clip(delta_rotation, -max_delta_rotation, max_delta_rotation)
+    clipped_delta_translation, clipped_delta_orientation = limiter.clip(delta_translation, delta_rotation, dt)
 
     next_position = current_pose[:3] + clipped_delta_translation
     next_position[0] = np.clip(next_position[0], safety_cfg.workspace_range.x[0], safety_cfg.workspace_range.x[1])
@@ -237,6 +237,7 @@ def record_episode(
     dt = 1.0 / ds_cfg.fps
     total_steps = math.ceil(ds_cfg.episode_time_s * ds_cfg.fps)
     rate = rospy.Rate(ds_cfg.fps)
+    action_limiter = limiter_from_safety_config(safety_cfg)
 
     arm.dashboard_services.activate_ros_control_on_ur()
     arm.activate_joint_trajectory_controller()
@@ -287,7 +288,7 @@ def record_episode(
 
             all_values = {}
             all_values.update(get_observations(arm, ur_current_state, image_recorder, start_ros))
-            all_values.update(set_action(arm, gello, ur_current_state, safety_cfg))
+            all_values.update(set_action(arm, gello, ur_current_state, safety_cfg, action_limiter, dt))
             all_values = {k: v.astype(np.float32) for k, v in all_values.items()}
             # Actual frame time (ROS clock, relative to episode start). Recording
             # it means an occasional loop overrun is recoverable data, not a
@@ -315,16 +316,23 @@ def record_episode(
 
 def wait_for_reset(arm, gello, safety_cfg, reset_time_s: float, events: dict) -> None:
     """Countdown during environment reset, interruptible by Enter."""
+    reset_dt = 0.1  # matches the rospy.sleep below; used for velocity/accel limiting
     start = time.perf_counter()
     arm.activate_cartesian_controller()
+    limiter = limiter_from_safety_config(safety_cfg)
     while time.perf_counter() - start < reset_time_s:
         if events["exit_early"] or events["stop"] or rospy.is_shutdown():
             events["exit_early"] = False
             break
+        current_state = {
+            "joint_angles": arm.joint_angles(),
+            "joint_velocities": arm.joint_velocities(),
+            "wrench": arm.get_wrench(),
+        }
         remaining = reset_time_s - (time.perf_counter() - start)
-        set_action(arm, gello, safety_cfg)
+        set_action(arm, gello, current_state, safety_cfg, limiter, reset_dt)
         print(f"\r  Reset: {remaining:.0f}s remaining (Enter to skip)  ", end="", flush=True)
-        rospy.sleep(0.1)
+        rospy.sleep(reset_dt)
     arm.activate_joint_trajectory_controller()
     print()
 

@@ -10,6 +10,7 @@ from omegaconf import DictConfig
 
 from osx_ur5e.base_env import BaseEnv
 from osx_ur5e.timestep import TimeStep, STEP_MID, STEP_LAST
+from osx_ur5e.action_limits import limiter_from_safety_config
 from ur_control import transformations
 
 
@@ -44,6 +45,7 @@ class FDCCEnv(BaseEnv):
         self.rotation_stiffness_limits = self.controller_config.safety_parameters.stiffness_limits.rotation
         self.max_delta_translation = self.controller_config.safety_parameters.max_delta_translation
         self.max_delta_rotation = np.deg2rad(self.controller_config.safety_parameters.max_delta_rotation)
+        self.action_limiter = limiter_from_safety_config(self.controller_config.safety_parameters)
         self.initial_config = self.controller_config.init_qpos
 
         rospy.loginfo(f"Default stiffness: {self.controller_config.stiffness}")
@@ -85,10 +87,12 @@ class FDCCEnv(BaseEnv):
         self.arm.activate_joint_trajectory_controller()
 
     def activate_compliance_control(self):
+        self.action_limiter.reset()
         self.arm.zero_ft_sensor()
         self.arm.activate_cartesian_controller()
 
     def reset(self, move_robot=False):
+        self.action_limiter.reset()
         if move_robot:
             self.set_controller_parameters()
             self.arm.activate_joint_trajectory_controller()
@@ -244,21 +248,19 @@ class FDCCEnv(BaseEnv):
     def clip_delta_actions(self, delta_translation, delta_orientation,
                            max_delta_translation=None, max_delta_rotation=None):
         """
-            Make sure that the delta translation and delta orientation are not too large and won't cause jumps in motion 
+            Clip the delta translation/orientation so the resulting motion respects the
+            configured magnitude, velocity, and acceleration limits (prevents jumps).
 
             returns the clipped delta translation and delta orientation
         """
-        if max_delta_translation is None:
-            max_delta_translation = self.max_delta_translation
-        if max_delta_rotation is None:
-            max_delta_rotation = self.max_delta_rotation
-
-        clipped_delta_translation = np.clip(delta_translation, -max_delta_translation, max_delta_translation)
-        clipped_delta_orientation = np.clip(delta_orientation, -max_delta_rotation, max_delta_rotation)
+        clipped_delta_translation, clipped_delta_orientation = self.action_limiter.clip(
+            delta_translation, delta_orientation, self.dt,
+            max_delta_translation=max_delta_translation,
+            max_delta_rotation=max_delta_rotation)
 
         if not np.allclose(clipped_delta_translation, delta_translation) or not np.allclose(clipped_delta_orientation, delta_orientation):
             rospy.logwarn_throttle(1,
-                                   f"Delta actions clipped!! (delta > max_delta):\n"
+                                   f"Delta actions clipped!! (magnitude/velocity/acceleration limit):\n"
                                    f"  translation: {delta_translation} -> {clipped_delta_translation}\n"
                                    f"  orientation: {delta_orientation} -> {clipped_delta_orientation}"
                                    )
