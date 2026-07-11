@@ -51,7 +51,6 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from osx_ur5e.fdcc_env import FDCCEnv
 from ur_control import transformations
-from robosuite.utils.transform_utils import quat2mat, ortho62quat
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -295,7 +294,7 @@ def extract_dataset_ground_truth(
     for i in range(ep_len):
         f_tool = ft_tool[i, :3]
         if ft_in_tool_frame and np.linalg.norm(obs_rot6[i]) > 0:
-            R = quat2mat(ortho62quat(obs_rot6[i]))
+            R = transformations.rotation_matrix_from_ortho6(obs_rot6[i])[:3, :3]
             f_world = R @ f_tool
         else:
             f_world = f_tool
@@ -721,7 +720,7 @@ def main(cfg: DictConfig) -> None:
     rospy.init_node("test_replay_episode_pro", anonymous=False)
     logger.info("ROS node initialized")
 
-    env = FDCCEnv(config=cfg, use_torch_for_cameras=False)
+    env = FDCCEnv(config=cfg)
     env.reference_trajectory = []
 
     logger.info(f"actions_as_deltas: {env.actions_as_deltas}")
