@@ -13,9 +13,9 @@ Runs in-container (needs the python rosbag API + lerobot); no roscore needed.
 
 Usage:
     rosrun osx_ur5e convert_bags_to_lerobot.py \
-        recording.conversion.session_dir=/path/to/raw_data/task_20260710_120000 \
+        recording.conversion.session_dir=/home/malek/osx-ros-comet/dependencies/comet/raw_data/wiping_the_edge_of_the_sink_20260711_043437 \
         dataset.dataset.fps=25 \
-        dataset.dataset.repo_id=[book_flipping_25hz]
+        dataset.dataset.repo_id=[test_25hz]
 
 Re-run with a different fps / repo_id at any time - the bags are the ground
 truth, the LeRobotDataset is a single-rate view of them.
