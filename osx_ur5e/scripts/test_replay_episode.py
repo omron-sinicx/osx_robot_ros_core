@@ -651,7 +651,7 @@ def _log_replay_summary(episode_idx: int, replay: ReplayResult, ds_gt: dict) -> 
 
 @hydra.main(
     version_base=None,
-    config_path="../../../../../dependencies/comet/configs",
+    config_path="../../../../../../dependencies/comet/configs",
     config_name="test_wipe_osx",
 )
 def main(cfg: DictConfig) -> None:

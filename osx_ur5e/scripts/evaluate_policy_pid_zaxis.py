@@ -384,7 +384,7 @@ def factored_to_controller(
 
 @hydra.main(
     version_base=None,
-    config_path="../../../../../dependencies/comet/configs",
+    config_path="../../../../../../dependencies/comet/configs",
     config_name="blackboard_wipe",
 )
 def main(cfg: DictConfig) -> None:

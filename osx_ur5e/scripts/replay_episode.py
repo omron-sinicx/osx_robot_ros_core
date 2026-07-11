@@ -119,7 +119,7 @@ def build_env_action(frame: dict, action_type: str, replay_action_keys: list) ->
 
 @hydra.main(
     version_base=None,
-    config_path="../../../../../dependencies/comet/configs",
+    config_path="../../../../../../dependencies/comet/configs",
     config_name="test_wipe_osx",
 )
 def main(cfg: DictConfig) -> None:

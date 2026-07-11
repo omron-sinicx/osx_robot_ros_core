@@ -21,7 +21,7 @@ pytest.importorskip("lerobot")
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-UR5E_URDF = Path("/root/osx-ur/underlay_ws/src/ur_python_utilities/ur_pykdl/urdf/ur5e.urdf")
+UR5E_URDF = Path("/root/osx-ur/ws/src/deps/ur_python_utilities/ur_pykdl/urdf/ur5e.urdf")
 
 ALPHABETICAL_JOINTS = [
     "elbow_joint", "shoulder_lift_joint", "shoulder_pan_joint",

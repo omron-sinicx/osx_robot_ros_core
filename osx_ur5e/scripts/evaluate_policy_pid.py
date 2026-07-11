@@ -493,7 +493,7 @@ def convert_policy_action(action_dict: dict) -> dict:
 # config_path is relative to this file's directory
 @hydra.main(
     version_base=None,
-    config_path="../../../../../dependencies/comet/configs",
+    config_path="../../../../../../dependencies/comet/configs",
     config_name="blackboard_wipe",
 )
 def main(cfg: DictConfig) -> None:

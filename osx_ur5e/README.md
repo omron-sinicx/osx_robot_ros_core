@@ -107,7 +107,7 @@ Press SPACE to see the key mappings
 
 For advanced robot control using the `arm` interface, see the example script:
 ```bash
-./underlay_ws/src/ur_python_utilities/ur_control/scripts/controller_examples.py
+./ws/src/deps/ur_python_utilities/ur_control/scripts/controller_examples.py
 ```
 
 ## Troubleshooting

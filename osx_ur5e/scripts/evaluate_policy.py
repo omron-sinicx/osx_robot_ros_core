@@ -63,7 +63,7 @@ def _to_env_action(adapter, action_dict, actions_as_deltas):
 
 @hydra.main(
     version_base=None,
-    config_path="../../../../../dependencies/comet/configs",
+    config_path="../../../../../../dependencies/comet/configs",
     config_name="book_flipping",
 )
 def main(cfg: DictConfig) -> None:

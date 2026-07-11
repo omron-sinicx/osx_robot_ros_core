@@ -7,7 +7,7 @@ import pytest
 
 from osx_ur5e.observation_assembler import ObservationAssembler, Sample
 
-UR5E_URDF = Path("/root/osx-ur/underlay_ws/src/ur_python_utilities/ur_pykdl/urdf/ur5e.urdf")
+UR5E_URDF = Path("/root/osx-ur/ws/src/deps/ur_python_utilities/ur_pykdl/urdf/ur5e.urdf")
 
 QPOS = np.array([0.1, -1.2, 1.8, -0.9, -1.5, 0.3])
 QVEL = np.array([0.02, -0.05, 0.10, 0.01, -0.02, 0.03])
