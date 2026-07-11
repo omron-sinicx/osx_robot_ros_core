@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import rospy
-from std_msgs.msg import Empty
+from std_msgs.msg import String
 
 
 class RosbagRecorderError(RuntimeError):
@@ -38,10 +38,12 @@ class RosbagRecorder:
         self._episode_dir: Optional[Path] = None
         self._begin_write_seen = False
         self._t_record_start: Optional[float] = None
-        # `rosbag record -p` publishes on <node_name>/begin_write once the
-        # bag file is actually open - our exact "recording live" gate.
+        # `rosbag record -p` publishes a latched std_msgs/String on /begin_write
+        # once the bag file is actually open - our exact "recording live" gate.
+        # NOTE: it advertises on a public NodeHandle, so the topic resolves
+        # against the namespace (/), NOT the node name set via __name:=.
         self._node_name = "data_collection_bag_recorder"
-        rospy.Subscriber(f"/{self._node_name}/begin_write", Empty,
+        rospy.Subscriber("/begin_write", String,
                          self._begin_write_cb, queue_size=1)
 
     def _begin_write_cb(self, _msg):
