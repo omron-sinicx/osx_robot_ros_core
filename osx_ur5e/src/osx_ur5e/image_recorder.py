@@ -108,7 +108,7 @@ class ImageRecorder:
         return (rospy.Time.now() - cam.msg.header.stamp).to_sec()
 
     def _decode_image(self, msg):
-        return self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+        return self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough') / 255.0
 
     def _resolve_max_age(self, max_image_age_s):
         """Fall back to the instance default when no override is given."""
