@@ -71,7 +71,7 @@ def build_features(cfg: DictConfig) -> dict:
         # the frame was missing/stale. Small value -> float32-safe. Kept out of
         # the "observation.images." namespace so LeRobot does not treat it as a
         # video stream.
-        features[f"observation.image_time.{cam_name}"] = {
+        features[f"observation.camera_time.{cam_name}"] = {
             "dtype": "float32",
             "shape": (1,),
             "names": None,
@@ -94,8 +94,8 @@ def build_features(cfg: DictConfig) -> dict:
     # Real wall-clock time of the frame, relative to episode start (seconds).
     # LeRobot labels frames as uniform 1/fps; this records the *actual* time so
     # loop jitter/overruns are visible and correctable at training time.
-    # Same clock/axis as observation.image_time, so vision-vs-state skew is
-    # simply frame_time - image_time.
+    # Same clock/axis as observation.camera_time, so vision-vs-state skew is
+    # simply frame_time - camera_time.
     features["observation.frame_time"] = {
         "dtype": "float32",
         "shape": (1,),
@@ -166,8 +166,8 @@ def get_observations(arm: CompliantController, ur_current_state: dict, image_rec
         # correctable at training time.
         for k in images:
             stamp = stamps.get(k)
-            image_time = np.nan if stamp is None else stamp - start_ros
-            obs[f"observation.image_time.{k}"] = np.array([image_time], dtype=np.float32)
+            camera_time = np.nan if stamp is None else stamp - start_ros
+            obs[f"observation.camera_time.{k}"] = np.array([camera_time], dtype=np.float32)
     return obs
 
 
