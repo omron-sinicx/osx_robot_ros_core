@@ -1,5 +1,6 @@
 from comet.common.utils.vt_utils import (
     process_factored_action_dict,
+    process_force_vector_action_dict,
     compute_directional_stiffness_diagonal,
 )
 from comet.common.datasets.dataset_info_utils import load_characteristic_length
@@ -154,7 +155,16 @@ class FDCCEnv(BaseEnv):
         """
             Prepare the action for the controller.
         """
-        if "action.contact_direction" in action:  # FVT mode
+        if "action.force_vector" in action:  # Force-vector (Cartesian factored) mode
+            self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
+            controller_action = process_force_vector_action_dict(action,
+                                                                 default_stiffness=self.controller_config.stiffness,
+                                                                 default_stiffness_rot=self.controller_config.stiffness,
+                                                                 characteristic_length=self.characteristic_length,
+                                                                 use_isotropic_stiffness=False,
+                                                                 orientation_representation="quaternion",
+                                                                 full_stiffness_matrix=True)
+        elif "action.contact_direction" in action:  # FVT mode
             self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
             controller_action = process_factored_action_dict(action,
                                                              default_stiffness=self.controller_config.stiffness,
