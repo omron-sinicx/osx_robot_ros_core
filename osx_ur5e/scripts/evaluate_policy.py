@@ -77,11 +77,23 @@ def main(cfg: DictConfig) -> None:
 
         env = FDCCEnv(config=adapter.env_config)
 
+        if adapter.pad_to_square:
+            logger.info("Images: padding to square before resizing (matches training)")
+
+        def _format_obs(arm, feeder, features_or_keys, camera_shape):
+            return format_real_robot_observations(
+                arm,
+                feeder,
+                features_or_keys,
+                camera_shape,
+                pad_to_square=adapter.pad_to_square,
+            )
+
         runner = RealRobotEvalRunner(
             cfg,
             adapter,
             env,
-            format_obs=format_real_robot_observations,
+            format_obs=_format_obs,
             to_env_action=lambda action_dict, actions_as_deltas: _to_env_action(
                 adapter, action_dict, actions_as_deltas
             ),

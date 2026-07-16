@@ -2,7 +2,7 @@ from comet.common.utils.vt_utils import (
     process_factored_action_dict,
     compute_directional_stiffness_diagonal,
 )
-from comet.common.datasets.dataset_info_utils import load_characteristic_length
+from comet.common.datasets.dataset_info_utils import load_characteristic_length, load_direction_frame
 import rospy
 import numpy as np
 from pathlib import Path
@@ -56,17 +56,20 @@ class FDCCEnv(BaseEnv):
         self.load_characteristic_length(config)
 
     def load_characteristic_length(self, config):
-        """Read characteristic_length from the dataset's info.json, with fallback."""
+        """Read characteristic_length and direction_frame from the dataset's info.json, with fallback."""
         try:
             from lerobot.datasets.utils import load_info
             dataset_dir = Path(config.dataset.dataset.dir) / config.dataset.dataset.repo_id[0]
             info = load_info(dataset_dir)
             self.characteristic_length = load_characteristic_length(info)
-            rospy.loginfo(f"characteristic_length={self.characteristic_length} (from dataset info.json)")
+            self.direction_frame = load_direction_frame(info)
+            rospy.loginfo(f"characteristic_length={self.characteristic_length}, "
+                          f"direction_frame={self.direction_frame} (from dataset info.json)")
         except Exception as e:
             self.characteristic_length = 0.1
+            self.direction_frame = "world"
             rospy.logwarn(f"Could not read characteristic_length from dataset: {e}. "
-                          f"Using default={self.characteristic_length}")
+                          f"Using default={self.characteristic_length}, direction_frame={self.direction_frame}")
 
     def set_controller_parameters(self):
         p_gains = self.controller_config['p_gains']
@@ -162,7 +165,8 @@ class FDCCEnv(BaseEnv):
                                                              characteristic_length=self.characteristic_length,
                                                              use_isotropic_stiffness=False,
                                                              orientation_representation="quaternion",
-                                                             full_stiffness_matrix=True)
+                                                             full_stiffness_matrix=True,
+                                                             direction_frame=self.direction_frame)
         elif "action.virtual_target_position" in action:  # VT mode
             self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
             vt_pos = action["action.virtual_target_position"]

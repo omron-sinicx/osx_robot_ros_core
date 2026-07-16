@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torchvision import transforms
 
+from comet.common.utils.image_transforms import pad_to_square as _pad_to_square
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +98,7 @@ def format_real_robot_observations(
     feeder,
     features_or_keys: dict | set[str],
     camera_shape: tuple,
+    pad_to_square: bool = False,
 ) -> dict:
     """Build a policy-ready observation dict from the live topic feeder.
 
@@ -109,6 +112,8 @@ def format_real_robot_observations(
         feeder: RosSampleFeeder from FDCCEnv (env.image_recorder).
         features_or_keys: Feature dict from checkpoint or a set of observation key names.
         camera_shape: (H, W) to resize camera images to match training resolution.
+        pad_to_square: Pad images to square before resizing, matching checkpoints
+            trained with model_configs.square_crop enabled.
 
     Returns:
         Dict mapping observation keys to torch tensors ready for policy.select_action().
@@ -142,7 +147,10 @@ def format_real_robot_observations(
             image_chw = _image_hwc_to_chw(value)
             if image_chw.dtype != np.uint8:
                 image_chw = np.clip(image_chw, 0, 255).astype(np.uint8)
-            obs[key] = resize_transform(torch.tensor(image_chw, dtype=torch.uint8))
+            image = torch.tensor(image_chw, dtype=torch.uint8)
+            if pad_to_square:
+                image = _pad_to_square(image)
+            obs[key] = resize_transform(image)
         else:
             obs[key] = torch.tensor(np.array(value).flatten(), dtype=torch.float32)
 
