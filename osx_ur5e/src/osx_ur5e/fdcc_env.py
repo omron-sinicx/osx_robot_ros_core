@@ -217,10 +217,11 @@ class FDCCEnv(BaseEnv):
         else:
             raise ValueError(f"Invalid stiffness matrix size: {stiffness_flat.size}")
 
+        self.arm.update_stiffness(stiffness_flat)
         # Only update the stiffness if the change is significant
-        if not np.all(np.isclose(self.last_stiffness_params, stiffness_diag, atol=5.0)):
-            self.arm.update_stiffness(stiffness_flat)
-            self.last_stiffness_params = np.copy(stiffness_diag)
+        # if not np.all(np.isclose(self.last_stiffness_params, stiffness_diag, atol=5.0)):
+        #     self.arm.update_stiffness(stiffness_flat)
+        #     self.last_stiffness_params = np.copy(stiffness_diag)
 
         action_translation = action['action.position']
         action_rotation = action['action.orientation']
