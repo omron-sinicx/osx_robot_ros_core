@@ -30,6 +30,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import hydra
+import comet  # noqa: F401  # registers the ${comet_root:} resolver used by the configs
 import numpy as np
 import yaml
 from omegaconf import DictConfig, OmegaConf
@@ -218,7 +219,7 @@ def convert_episode(bag, episode_meta: dict, session_meta: dict, assembler,
 # ---------------------------------------------------------------------------
 
 @hydra.main(config_path="/root/osx-ur/dependencies/comet/configs",
-            config_name="book_flipping",
+            config_name="blank",
             version_base=None)
 def main(cfg: DictConfig) -> None:
     import rosbag

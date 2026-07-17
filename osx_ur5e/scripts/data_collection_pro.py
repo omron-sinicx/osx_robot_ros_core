@@ -28,6 +28,7 @@ import subprocess
 from pathlib import Path
 
 import hydra
+import comet  # noqa: F401  # registers the ${comet_root:} resolver used by the configs
 import numpy as np
 import rospy
 import yaml
@@ -197,7 +198,7 @@ def ft_violation(arm, safety_cfg) -> bool:
 # ---------------------------------------------------------------------------
 
 @hydra.main(config_path="/root/osx-ur/dependencies/comet/configs",
-            config_name="book_flipping",
+            config_name="blank",
             version_base=None)
 def main(cfg: DictConfig) -> None:
     rec_cfg = cfg.recording

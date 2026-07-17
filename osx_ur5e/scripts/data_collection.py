@@ -23,6 +23,7 @@ import yaml
 from pathlib import Path
 
 import hydra
+import comet  # noqa: F401  # registers the ${comet_root:} resolver used by the configs
 import numpy as np
 import rospy
 from omegaconf import DictConfig, OmegaConf
