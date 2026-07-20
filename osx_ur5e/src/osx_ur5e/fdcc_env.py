@@ -3,9 +3,14 @@ from comet.common.utils.vt_utils import (
     compute_directional_stiffness_diagonal,
 )
 from comet.common.datasets.dataset_info_utils import load_characteristic_length, load_direction_frame
+from comet.common.utils.env_config_compat import (
+    legacy_dataset_dir,
+    resolve_cam_names,
+    resolve_control_frequency,
+    resolve_env_meta_from_config,
+)
 import rospy
 import numpy as np
-from pathlib import Path
 from omegaconf import DictConfig
 
 from osx_ur5e.base_env import BaseEnv
@@ -34,10 +39,10 @@ class FDCCEnv(BaseEnv):
         super().load_params(config)
 
         # Parameters
-        self.control_frequency = config.policy.fps
+        self.control_frequency = resolve_control_frequency(config)
         self.dt = 1. / self.control_frequency
 
-        self.cam_names = config.dataset.cameras.keys()
+        self.cam_names = resolve_cam_names(config)
         rospy.loginfo(f"Cameras to record from: {self.cam_names}")
         self.controller_config = config.controller
         self.max_force_torque = self.controller_config.safety_parameters.max_force_torque
@@ -56,10 +61,18 @@ class FDCCEnv(BaseEnv):
         self.load_characteristic_length(config)
 
     def load_characteristic_length(self, config):
-        """Read characteristic_length and direction_frame from the dataset's info.json, with fallback."""
+        """Read characteristic_length/direction_frame: a standalone eval_config.yaml's
+        ``env`` block, else the dataset's info.json, else fall back with a warning."""
+        env_meta = resolve_env_meta_from_config(config)
+        if env_meta is not None:
+            self.characteristic_length, self.direction_frame = env_meta
+            rospy.loginfo(f"characteristic_length={self.characteristic_length}, "
+                          f"direction_frame={self.direction_frame} (from eval_config.yaml)")
+            return
+
         try:
             from lerobot.datasets.utils import load_info
-            dataset_dir = Path(config.dataset.dataset.dir) / config.dataset.dataset.repo_id[0]
+            dataset_dir = legacy_dataset_dir(config)
             info = load_info(dataset_dir)
             self.characteristic_length = load_characteristic_length(info)
             self.direction_frame = load_direction_frame(info)
