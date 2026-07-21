@@ -227,18 +227,7 @@ class FDCCEnv(BaseEnv):
         """
         stiffness_matrix = np.asarray(action['action.stiffness_diag'])
         stiffness_flat = stiffness_matrix.flatten()
-        if stiffness_flat.size == 6:
-            stiffness_diag = stiffness_flat
-        elif stiffness_flat.size == 36:
-            stiffness_diag = np.diag(stiffness_matrix)
-        else:
-            raise ValueError(f"Invalid stiffness matrix size: {stiffness_flat.size}")
-
         self.arm.update_stiffness(stiffness_flat)
-        # Only update the stiffness if the change is significant
-        # if not np.all(np.isclose(self.last_stiffness_params, stiffness_diag, atol=5.0)):
-        #     self.arm.update_stiffness(stiffness_flat)
-        #     self.last_stiffness_params = np.copy(stiffness_diag)
 
         action_translation = action['action.position']
         action_rotation = action['action.orientation']
@@ -276,11 +265,18 @@ class FDCCEnv(BaseEnv):
             max_delta_translation=max_delta_translation,
             max_delta_rotation=max_delta_rotation)
 
-        if not np.allclose(clipped_delta_translation, delta_translation) or not np.allclose(clipped_delta_orientation, delta_orientation):
-            rospy.logwarn_throttle(1,
-                                   f"Delta actions clipped!! (magnitude/velocity/acceleration limit):\n"
-                                   f"  translation: {delta_translation} -> {clipped_delta_translation}\n"
-                                   f"  orientation: {delta_orientation} -> {clipped_delta_orientation}"
-                                   )
+        triggers = self.action_limiter.last_clip_triggers
+        if triggers["translation"] or triggers["orientation"]:
+            lines = ["Delta actions clipped:"]
+            if triggers["translation"]:
+                lines.append(
+                    f"  translation ({', '.join(triggers['translation'])}): "
+                    f"{delta_translation} -> {clipped_delta_translation}")
+            if triggers["orientation"]:
+                lines.append(
+                    f"  orientation ({', '.join(triggers['orientation'])}): "
+                    f"{delta_orientation} -> {clipped_delta_orientation}")
+            rospy.logwarn_throttle(1, "\n".join(lines))
 
         return clipped_delta_translation, clipped_delta_orientation
+

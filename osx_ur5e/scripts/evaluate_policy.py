@@ -27,7 +27,7 @@ Usage:
 
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
-    q      - stop current rollout and end evaluation
+    q      - early-stop current rollout, record, and continue to the next
 """
 
 from __future__ import annotations
@@ -77,8 +77,9 @@ def main(cfg: DictConfig) -> None:
 
         env = FDCCEnv(config=adapter.env_config)
 
+        rospy.loginfo(f"Pad to square: {adapter.pad_to_square}")
         if adapter.pad_to_square:
-            logger.info("Images: padding to square before resizing (matches training)")
+            rospy.loginfo("Images: padding to square before resizing (matches training)")
 
         def _format_obs(arm, feeder, features_or_keys, camera_shape):
             return format_real_robot_observations(

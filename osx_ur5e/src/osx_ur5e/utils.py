@@ -113,7 +113,7 @@ def format_real_robot_observations(
         features_or_keys: Feature dict from checkpoint or a set of observation key names.
         camera_shape: (H, W) to resize camera images to match training resolution.
         pad_to_square: Pad images to square before resizing, matching checkpoints
-            trained with model_configs.square_crop enabled.
+            trained with model_configs.pad_to_square enabled.
 
     Returns:
         Dict mapping observation keys to torch tensors ready for policy.select_action().
