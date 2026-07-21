@@ -675,7 +675,8 @@ def main(cfg: DictConfig) -> None:
         raise FileNotFoundError(f"Dataset directory not found: {dataset_root}")
 
     logger.info(f"Loading dataset: {repo_id} from {dataset_root}")
-    dataset = LeRobotDataset(repo_id, root=dataset_root, video_backend="pyav", use_videos=False)
+    start_episode = int(cfg.dataset.dataset.episode_idx)
+    dataset = LeRobotDataset(repo_id, root=dataset_root, video_backend="pyav", use_videos=False, episodes=[start_episode])
 
     info_path = output_dir / "dataset_info.json"
     with open(info_path, "w") as f:
@@ -684,7 +685,6 @@ def main(cfg: DictConfig) -> None:
 
     fps = cfg.dataset.dataset.fps
 
-    start_episode = int(cfg.dataset.dataset.episode_idx)
     num_episodes = int(OmegaConf.select(cfg, "eval.num_episodes", default=1))  # FIXME i dont know from where it imports this
     total_episodes = dataset.meta.total_episodes
     end_episode = min(start_episode + num_episodes, total_episodes)
@@ -697,8 +697,8 @@ def main(cfg: DictConfig) -> None:
     primary_has_stiffness = any("stiffness" in k for k in primary_keys)
     logger.info(f"Primary action type: {primary_action_type} | keys: {primary_keys}")
 
-    # comparison_action_type = "raw_actions"
-    comparison_action_type = "virtual_target_actions"
+    comparison_action_type = "raw_actions"
+    # comparison_action_type = "virtual_target_actions"
     if comparison:
         comparison_keys = _action_keys_for(cfg, comparison_action_type)
         comparison_has_stiffness = any("stiffness" in k for k in comparison_keys)
