@@ -150,6 +150,28 @@ def check_clock_sanity(topics_to_check: dict, max_skew_s: float) -> None:
             log.info("Clock check OK for %s: skew %.1f ms", name, skew * 1e3)
 
 
+def resume_session(resume_dir):
+    """Load an existing session for appending episodes.
+
+    Returns (session_dir, topics, camera_topics, saved) where ``saved`` is the
+    number of episodes already in the session root. Because discarded episodes
+    are moved to ``.discarded/`` and only saves advance the episode index,
+    ``saved`` doubles as the next episode index. The topic set is read back from
+    session_meta.json so appended episodes record exactly the same sources.
+    """
+    session_dir = Path(resume_dir)
+    meta_path = session_dir / "session_meta.json"
+    if not meta_path.exists():
+        raise RuntimeError(
+            f"resume_session={session_dir}: not a session dir (no session_meta.json)")
+    with open(meta_path) as f:
+        prior = json.load(f)
+    topics = list(prior["topics"])
+    camera_topics = {cam: tuple(t) for cam, t in prior["camera_topics"].items()}
+    saved = len([p for p in session_dir.glob("episode_*") if p.is_dir()])
+    return session_dir, topics, camera_topics, saved
+
+
 def write_session_meta(session_dir: Path, cfg: DictConfig, topics, camera_topics) -> None:
     """Sidecar with everything Stage 2 needs to be self-contained."""
     meta = {
@@ -234,10 +256,24 @@ def main(cfg: DictConfig) -> None:
     teleop.set_stiffness(controller_cfg.stiffness * np.ones(6))
 
     # -- topics + session --------------------------------------------------
-    camera_topics = resolve_camera_topics(list(ds_cfg.cameras or []), rec_cfg.camera_transport)
-    topics = list(rec_cfg.state_topics) + list(rec_cfg.extra_topics)
-    for image_topic, info_topic in camera_topics.values():
-        topics += [image_topic, info_topic]
+    # Resume mode reuses the original topic set from session_meta.json so
+    # appended episodes match the earlier ones; a fresh run resolves from config.
+    resume_dir = rec_cfg.get("resume_session", None)
+    if resume_dir:
+        session_dir, topics, camera_topics, saved = resume_session(resume_dir)
+        episode_idx = saved
+        log.info("Resuming session %s (%d episodes already saved)", session_dir, saved)
+    else:
+        camera_topics = resolve_camera_topics(list(ds_cfg.cameras or []), rec_cfg.camera_transport)
+        topics = list(rec_cfg.state_topics) + list(rec_cfg.extra_topics)
+        for image_topic, info_topic in camera_topics.values():
+            topics += [image_topic, info_topic]
+        task_slug = re.sub(r"[^a-z0-9]+", "_", ds_cfg.dataset.task.lower()).strip("_")
+        session_dir = Path(rec_cfg.output_dir) / \
+            f"{task_slug}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        write_session_meta(session_dir, cfg, topics, camera_topics)
+        saved = episode_idx = 0
 
     check_clock_sanity(
         {"joint_states": "/joint_states",
@@ -245,11 +281,6 @@ def main(cfg: DictConfig) -> None:
         rec_cfg.clock_check.max_skew_s,
     )
 
-    task_slug = re.sub(r"[^a-z0-9]+", "_", ds_cfg.dataset.task.lower()).strip("_")
-    session_dir = Path(rec_cfg.output_dir) / \
-        f"{task_slug}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    write_session_meta(session_dir, cfg, topics, camera_topics)
     log.info("Session: %s", session_dir)
     log.info("Recording %d topics", len(topics))
 
@@ -260,8 +291,8 @@ def main(cfg: DictConfig) -> None:
     num_episodes = ds_cfg.dataset.num_episodes
     episode_time_s = ds_cfg.dataset.episode_time_s
     reset_time_s = ds_cfg.dataset.reset_time_s
-    saved = 0
-    episode_idx = 0
+    if saved >= num_episodes:
+        log.info("Session already has %d/%d episodes; nothing to record", saved, num_episodes)
 
     try:
         while saved < num_episodes and not events["stop"] and not rospy.is_shutdown():
