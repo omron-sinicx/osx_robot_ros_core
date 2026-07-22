@@ -433,7 +433,11 @@ def main(cfg: DictConfig) -> None:
 
     wait_for_keypress_reset(events)
     try:
-        recorded = 0
+        # Absolute episode index in the dataset (not session-local), so resume
+        # continues from e.g. 24/50 instead of restarting at 1/50.
+        recorded = dataset.num_episodes
+        if recorded > 0:
+            log.info("Resuming from episode %d/%d", recorded + 1, ds_cfg.dataset.num_episodes)
         while recorded < ds_cfg.dataset.num_episodes and not events["stop"] and not rospy.is_shutdown():
             log.info(
                 "Episode %d/%d  [Enter=end episode, r=redo, q=quit]",
