@@ -16,9 +16,15 @@ Controls during recording:
 
 import logging
 import math
+import os
+import select
 import shutil
+import signal
 import sys
+import termios
+import threading
 import time
+import tty
 import yaml
 from pathlib import Path
 
@@ -26,7 +32,6 @@ import hydra
 import numpy as np
 import rospy
 from omegaconf import DictConfig, OmegaConf
-from pynput import keyboard as kb
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
@@ -43,12 +48,18 @@ from rich.progress import (
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from osx_gello.gello import Gello
 from osx_gym_env.utils import ImageRecorder
+from osx_claw.claw_controller import ClawController
+from bendlabs.bendlabs_recorder import BendLabsRecorder
 from ur_control import transformations
 from ur_control.fzi_cartesian_compliance_controller import CompliantController
 
 console = Console()
 log = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Gripper utilities
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Feature construction
@@ -79,6 +90,13 @@ def build_features(cfg: DictConfig) -> dict:
             "names": None,
         }
 
+    # gripper is included as the last element of observation.state and action
+
+    if cfg.get("use_bendlabs", False):
+        n = cfg.get("num_bendlabs_sensors", 4)
+        features["observation.bendlabs"] = {
+            "dtype": "float32", "shape": (n * 2,), "names": None}
+
     return features
 
 
@@ -86,50 +104,61 @@ def build_features(cfg: DictConfig) -> dict:
 # Keyboard listener
 # ---------------------------------------------------------------------------
 
-def start_keyboard_listener(events: dict):
-    """Start a pynput keyboard listener for episode control.
+def start_keyboard_listener(events: dict) -> threading.Thread:
+    """Start a background thread that reads keypresses directly from stdin.
 
     Keys:
         Enter / Space  - end current episode early (save it)
         r              - discard episode and re-record
         q              - stop all recording
     """
+    try:
+        old_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+    except (termios.error, AttributeError):
+        log.warning("stdin is not a tty; keyboard listener disabled.")
+        return threading.Thread(target=lambda: None, daemon=True)
 
-    def on_press(key):
+    def _reader():
         try:
-            ch = key.char.lower()
-            if ch == "q":
-                events["stop"] = True
-                events["exit_early"] = True
-            elif ch == "r":
-                events["rerecord"] = True
-                events["exit_early"] = True
-        except AttributeError:
-            if key in (kb.Key.enter, kb.Key.space):
-                events["exit_early"] = True
+            while not events.get("_stop_listener"):
+                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if not ready:
+                    continue
+                ch = sys.stdin.read(1).lower()
+                if ch == "q":
+                    events["stop"] = True
+                    events["exit_early"] = True
+                elif ch == "r":
+                    events["rerecord"] = True
+                    events["exit_early"] = True
+                elif ch in ("\r", "\n", " "):
+                    events["exit_early"] = True
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
-    listener = kb.Listener(on_press=on_press)
-    listener.start()
-    return listener
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    return t
 
 
 # ---------------------------------------------------------------------------
 # Robot I/O
 # ---------------------------------------------------------------------------
 
-def get_observations(arm: CompliantController, image_recorder: ImageRecorder) -> dict:
-    eef = arm.end_effector()
-    eef_velocity = arm.end_effector_velocity()
+def get_observations(arm: CompliantController, image_recorder: ImageRecorder,
+                     claw: ClawController = None,
+                     bendlabs: BendLabsRecorder = None) -> dict:
+    arm_qpos = arm.joint_angles()
     obs = {
-        "observation.qpos":                    arm.joint_angles(),
-        "observation.qvel":                    arm.joint_velocities(),
-        "observation.eef.position":            eef[:3],
-        "observation.eef.linear_velocity":     eef_velocity[:3],
-        "observation.eef.angular_velocity":    eef_velocity[3:],
-        "observation.eef.rotation_ortho6":     transformations.ortho6_from_quaternion(eef[3:]),
-        "observation.eef.rotation_axis_angle": transformations.axis_angle_from_quaternion(eef[3:]),
-        "observation.ft":                      arm.get_wrench(),
+        "observation.state": (
+            np.append(arm_qpos, claw.get_normalized_position())
+            if claw is not None else arm_qpos
+        ),
+        "observation.ft": arm.get_wrench(),
     }
+    if bendlabs is not None:
+        obs["observation.bendlabs"] = bendlabs.get_angles()
     if image_recorder is not None:
         images = image_recorder.get_images()
         if any(v is None for v in images.values()):
@@ -139,11 +168,11 @@ def get_observations(arm: CompliantController, image_recorder: ImageRecorder) ->
     return obs
 
 
-def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -> dict:
+def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig,
+               claw: ClawController = None) -> dict:
     gello_joints = gello.joint_angles()
     current_pose = arm.end_effector()
     target_pose = arm.end_effector(joint_angles=gello_joints)
-    stiffness_diag = arm.current_stiffness
     delta_translation = target_pose[:3] - current_pose[:3]
     delta_rotation = transformations.quaternions_orientation_error(
         target_pose[3:], current_pose[3:])
@@ -167,15 +196,14 @@ def set_action(arm: CompliantController, gello: Gello, safety_cfg: DictConfig) -
 
     arm.set_cartesian_target_pose(pose=next_target)
 
-    return {
-        "action.joint":               gello_joints,
-        "action.position":            next_position,
-        "action.rotation_ortho6":     transformations.ortho6_from_quaternion(next_orientation),
-        "action.rotation_axis_angle": transformations.axis_angle_from_quaternion(next_orientation),
-        "action.stiffness_diag":      stiffness_diag,
-        "action.delta_position":      clipped_delta_translation,
-        "action.delta_rotation":      clipped_delta_orientation,
-    }
+    if claw is not None:
+        norm_gripper = gello.gripper_position()
+        claw.set_normalized_position(norm_gripper)
+        action_joints = np.append(gello_joints, norm_gripper)
+    else:
+        action_joints = gello_joints
+
+    return {"action": action_joints}
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +217,8 @@ def record_episode(
     dataset: LeRobotDataset,
     cfg: DictConfig,
     events: dict,
+    claw: ClawController = None,
+    bendlabs: BendLabsRecorder = None,
 ) -> None:
     ds_cfg = cfg.dataset
     safety_cfg = cfg.controller.safety_parameters
@@ -233,8 +263,9 @@ def record_episode(
             loop_start = time.perf_counter()
 
             all_values = {}
-            all_values.update(get_observations(arm, image_recorder))
-            all_values.update(set_action(arm, gello, safety_cfg))
+            all_values.update(get_observations(
+                arm, image_recorder, claw, bendlabs))
+            all_values.update(set_action(arm, gello, safety_cfg, claw))
             all_values = {k: np.asarray(v).astype(np.float32)
                           for k, v in all_values.items()}
 
@@ -278,9 +309,103 @@ def wait_for_keypress_reset(events: dict) -> None:
     print()
 
 
+def move_to_home(arm, cfg, claw=None) -> None:
+    """Drive the arm (and gripper) to a fixed home configuration via the joint
+    trajectory controller. Runs OUTSIDE the recorded episode, so the homing
+    motion is never added to the dataset.
+    """
+    ds_cfg = cfg.dataset
+    home = ds_cfg.get("home_position", None)
+    if home is None:
+        log.warning("dataset.home_position not set; skipping arm homing. "
+                    "Add a 6-element joint config to enable consistent episode starts.")
+        return
+    home = np.array(home, dtype=float)
+
+    # Optional small randomization around home for robustness to imperfect resets.
+    jitter = float(ds_cfg.get("home_randomization", 0.0))  # radians, per joint
+    if jitter > 0.0:
+        home = home + np.random.uniform(-jitter, jitter, size=home.shape)
+
+    target_time = float(ds_cfg.get("home_target_time_s", 4.0))
+    log.info("Homing arm to %s (%.1fs)", home, target_time)
+
+    # auto_switch is off, so do it explicitly
+    arm.activate_joint_trajectory_controller()
+    arm.set_joint_positions(positions=home, target_time=target_time, wait=True)
+
+    if claw is not None:
+        gripper_home = float(ds_cfg.get("gripper_home", 0.0))
+        claw.set_normalized_position(float(np.clip(gripper_home, 0.0, 1.0)))
+
+
+def teleop_to_start(arm, gello, claw, cfg, events) -> None:
+    """Non-recording GELLO teleop loop used as an alternative to auto-homing.
+
+    The user drives the arm to a desired start position and presses Enter to confirm.
+    """
+    safety_cfg = cfg.controller.safety_parameters
+    dt = 1.0 / cfg.dataset.fps
+
+    arm.activate_cartesian_controller()
+    print("  Arm homed. TELEOP active — drive to desired start position, "
+          "then press Enter to begin recording.", flush=True)
+
+    events["exit_early"] = False
+    while not events["exit_early"] and not events["stop"] and not rospy.is_shutdown():
+        loop_start = time.perf_counter()
+        set_action(arm, gello, safety_cfg, claw)
+        elapsed = time.perf_counter() - loop_start
+        rospy.sleep(max(dt - elapsed, 0.0))
+    events["exit_early"] = False
+    print()
+
+    arm.activate_joint_trajectory_controller()
+
+
+def reset_environment(arm, gello, claw, cfg, events) -> None:
+    ds_cfg = cfg.dataset
+
+    move_to_home(arm, cfg, claw)
+    if events["stop"] or rospy.is_shutdown():
+        return
+
+    home = ds_cfg.get("home_position", None)
+    if home is not None:
+        try:
+            home_arr = np.array(home, dtype=float)
+            gello_arr = np.array(gello.joint_angles(), dtype=float)
+            err = np.abs(gello_arr - home_arr)
+            print(f"  Arm homed. GELLO offset from home (rad): {err}")
+        except Exception as e:
+            log.debug("GELLO alignment readout skipped: %s", e)
+
+    if ds_cfg.get("teleop_reset", False):
+        print("  Reset the scene, then press Enter to begin teleop adjustment...",
+              flush=True)
+        events["exit_early"] = False
+        while not events["exit_early"] and not events["stop"] and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+        events["exit_early"] = False
+        print()
+        if events["stop"] or rospy.is_shutdown():
+            return
+        teleop_to_start(arm, gello, claw, cfg, events)
+        return
+
+    print("  Reset the scene and align the GELLO to the arm, "
+          "then press Enter to start recording...", flush=True)
+
+    events["exit_early"] = False
+    while not events["exit_early"] and not events["stop"] and not rospy.is_shutdown():
+        rospy.sleep(0.1)
+    events["exit_early"] = False
+    print()
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 @hydra.main(config_path="../config/hydra",
             config_name="test_task",
@@ -319,6 +444,28 @@ def main(cfg: DictConfig) -> None:
     arm.auto_switch_controllers = False
     arm.async_mode = True
     arm.zero_ft_sensor()
+
+    claw = None
+    if ds_cfg.get("use_gripper", False):
+        log.info("Initializing ClawController...")
+        claw = ClawController(init_node=False)
+
+    bendlabs = None
+    if ds_cfg.get("use_bendlabs", False):
+        log.info("Initializing BendLabsRecorder...")
+        bendlabs = BendLabsRecorder(
+            init_node=False,
+            num_sensors=ds_cfg.get("num_bendlabs_sensors", 4),
+        )
+        log.info("Waiting for BendLabs sensors...")
+        deadline = time.perf_counter() + 10.0
+        while not bendlabs.sensors_ready() and not rospy.is_shutdown():
+            if time.perf_counter() > deadline:
+                log.error(
+                    "Timed out waiting for BendLabs sensors. Check that uart_bridge_node is running.")
+                sys.exit(1)
+            rospy.sleep(0.1)
+        log.info("BendLabs sensors ready.")
 
     image_recorder = (
         ImageRecorder(init_node=False, camera_names=list(ds_cfg.cameras))
@@ -378,9 +525,16 @@ def main(cfg: DictConfig) -> None:
             )
 
     events = {"exit_early": False, "rerecord": False, "stop": False}
-    start_keyboard_listener(events)
 
-    wait_for_keypress_reset(events)
+    def _sigint_handler(_sig, _frame):
+        events["stop"] = True
+        events["exit_early"] = True
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    listener = start_keyboard_listener(events)
+
+    reset_environment(arm, gello, claw, cfg, events)
     try:
         recorded = 0
         while recorded < ds_cfg.num_episodes and not events["stop"] and not rospy.is_shutdown():
@@ -389,18 +543,33 @@ def main(cfg: DictConfig) -> None:
                 recorded + 1,
                 ds_cfg.num_episodes,
             )
-            record_episode(arm, gello, image_recorder, dataset, cfg, events)
+            record_episode(arm, gello, image_recorder, dataset,
+                           cfg, events, claw, bendlabs)
 
             if events["stop"]:
                 log.info("Stopping recording...")
                 dataset.clear_episode_buffer()
+                for cam_key in dataset.meta.camera_keys:
+                    img_dir = dataset._get_image_file_dir(
+                        dataset.episode_buffer["episode_index"], cam_key
+                    )
+                    if img_dir.exists() and any(img_dir.iterdir()):
+                        log.error(
+                            "Leftover images after clear_episode_buffer in %s!", img_dir)
                 break
 
             if events["rerecord"]:
                 log.info("Discarding episode, re-recording...")
                 events["rerecord"] = False
                 dataset.clear_episode_buffer()
-                wait_for_keypress_reset(events)
+                for cam_key in dataset.meta.camera_keys:
+                    img_dir = dataset._get_image_file_dir(
+                        dataset.episode_buffer["episode_index"], cam_key
+                    )
+                    if img_dir.exists() and any(img_dir.iterdir()):
+                        log.error(
+                            "Leftover images after clear_episode_buffer in %s!", img_dir)
+                reset_environment(arm, gello, claw, cfg, events)
                 continue
 
             dataset.save_episode()
@@ -409,12 +578,16 @@ def main(cfg: DictConfig) -> None:
                      recorded, dataset.num_episodes)
 
             if recorded < ds_cfg.num_episodes and not events["stop"]:
-                wait_for_keypress_reset(events)
+                reset_environment(arm, gello, claw, cfg, events)
     finally:
+        events["_stop_listener"] = True
+        listener.join(timeout=0.2)
         log.info("Finalizing dataset...")
         dataset.finalize()
         log.info("Done. %d episodes saved to %s",
                  dataset.num_episodes, dataset.root)
+        rospy.signal_shutdown("Recording complete")
+        os._exit(0)
 
 
 if __name__ == "__main__":

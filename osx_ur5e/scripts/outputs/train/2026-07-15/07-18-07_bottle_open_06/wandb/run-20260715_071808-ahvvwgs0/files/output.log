@@ -1,0 +1,54 @@
+INFO 2026-07-15 07:18:09 db_utils.py:117 [1m[34mLogs will be synced with wandb.[0m
+INFO 2026-07-15 07:18:09 db_utils.py:118 Track this run --> [1m[33mhttps://wandb.ai/rogue1starwars0728-waseda-university/lerobot/runs/ahvvwgs0[0m
+INFO 2026-07-15 07:18:09 ot_train.py:217 Creating dataset
+Traceback (most recent call last):
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/lerobot_dataset.py", line 106, in __init__
+    self.load_metadata()
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/lerobot_dataset.py", line 164, in load_metadata
+    self.info = load_info(self.root)
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/utils.py", line 289, in load_info
+    info = load_json(local_dir / INFO_PATH)
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/utils.py", line 256, in load_json
+    with open(fpath) as f:
+FileNotFoundError: [Errno 2] No such file or directory: 'data/bottle_open_06_lerobot/meta/info.json'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_http.py", line 407, in hf_raise_for_status
+    response.raise_for_status()
+  File "/usr/local/lib/python3.10/dist-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://huggingface.co/api/datasets/bottle_open_06_lerobot/refs
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/local/bin/lerobot-train", line 6, in <module>
+    sys.exit(main())
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/scripts/lerobot_train.py", line 547, in main
+    train()
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/configs/parser.py", line 233, in wrapper_inner
+    response = fn(cfg, *args, **kwargs)
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/scripts/lerobot_train.py", line 218, in train
+    dataset = make_dataset(cfg)
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/factory.py", line 88, in make_dataset
+    ds_meta = LeRobotDatasetMetadata(
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/lerobot_dataset.py", line 109, in __init__
+    self.revision = get_safe_version(self.repo_id, self.revision)
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/utils.py", line 528, in get_safe_version
+    hub_versions = get_repo_versions(repo_id)
+  File "/root/osx-ur/dependencies/lerobot_v3/src/lerobot/datasets/utils.py", line 497, in get_repo_versions
+    repo_refs = api.list_repo_refs(repo_id, repo_type="dataset")
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/hf_api.py", line 3248, in list_repo_refs
+    hf_raise_for_status(response)
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_http.py", line 457, in hf_raise_for_status
+    raise _format(RepositoryNotFoundError, message, response) from e
+huggingface_hub.errors.RepositoryNotFoundError: 401 Client Error. (Request ID: Root=1-6a573432-20402cdd5ec540c043285369;43848fc6-fb6a-43f1-86b4-48429f5b885e)
+
+Repository Not Found for url: https://huggingface.co/api/datasets/bottle_open_06_lerobot/refs.
+Please make sure you specified the correct `repo_id` and `repo_type`.
+If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://huggingface.co/docs/huggingface_hub/authentication
+Invalid username or password.

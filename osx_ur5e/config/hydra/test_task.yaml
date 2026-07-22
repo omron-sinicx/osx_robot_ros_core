@@ -5,18 +5,61 @@ defaults:
 
 # ================== Dataset Configuration ==================
 dataset:
-  repo_id: [test_task] # name of the dataset
+  repo_id: [bottle_open_06241205] # name of the dataset
   task: "Test task" # task description
   root: /root/osx-ur/
   dir: "${.root}/data"
   overwrite: false # overwrite the dataset if it already exists
-  fps: 50
-  num_episodes: 100
+  fps: 30
+  num_episodes: 20
   episode_time_s: 60.0
   reset_time_s: 30.0
   robot_type: ur5e
   episode_idx: 0
   seed: 2
+
+  # home_position: [1.57, -1.57, 1.57, -1.57, -1.57, -1.57]
+  # home_position: [1.6060155073748987, -1.3023339074901124, 1.6428978443145752, -1.7655912838377894, -1.6474512259112757, 2.2007844279845834]
+  # home_position: [1.298525, -1.387537, 1.80205245, -2.01655342, -1.62316, 2.2007844279845834]
+  # home_position: [1.298525, -1.387537, 1.80205245, -2.01655342, -1.62316, 2.93791273]
+  # home_position: [1.2159709, -1.3304645, 1.7322393, -2.0085249, -1.6201891, 2.8553587]
+
+  # home_position: [1.1307988, -1.3709561, 1.851375457, -1.9395844, -1.2662364, 2.93791273]
+  home_position: [1.2983504, -1.4299483, 1.7133897, -1.88582826, -1.62316, 2.93686553]
+  home_target_time_s: 4.0    # time for the follower to move to home (s)
+  gripper_home: 1.0          # normalized gripper pos at episode start (0=open)
+  home_randomization: 0.0    # rad; per-joint uniform jitter around home (0 = off)
+  teleop_reset: true        # if true, use GELLO teleoperation to set start pose instead of auto-homing
+
+  use_gripper: true
+  # Shared by replay_pkl.py and evaluate_policy_points.py: on every gripper
+  # open<->close transition, slow the replay/rollout (not freeze it) for
+  # gripper_slowdown_duration_s seconds by multiplying the per-step sleep by
+  # gripper_slowdown_factor -- gives the slow claw a head start on
+  # reaching/making contact before the arm moves far. replay_pkl.py detects a
+  # transition from its recorded discrete gripper_states array;
+  # evaluate_policy_points.py detects one from a large step-to-step change in
+  # the policy's continuous predicted gripper command (see
+  # gripper_slowdown_change_threshold below).
+  gripper_slowdown_enabled: true
+  gripper_slowdown_factor: 20.0
+  gripper_slowdown_duration_s: 0.5
+  gripper_slowdown_change_threshold: 0.4    # normalized [0,1]; |delta gripper_norm| above this counts as a transition (evaluate_policy_points.py only)
+
+  # evaluate_policy_points.py only: slow the rollout while any BendLabs
+  # bend/twist sensor deviates from its start-of-episode baseline by more
+  # than bendlab_slowdown_threshold -- a direct physical-contact signal,
+  # independent of (and combined via max() with) the gripper_slowdown_*
+  # trigger above. Level-based, not a timed window: reverts to normal speed
+  # as soon as the deviation drops back under threshold. Sole gate for
+  # whether BendLabsRecorder gets initialized in this script (separate from
+  # use_bendlabs below, which only controls dataset logging elsewhere).
+  bendlab_slowdown_enabled: true
+  bendlab_slowdown_threshold: 205.0   # degrees; max |current - baseline| across all sensors/axes -- untested default, tune on hardware
+  bendlab_slowdown_factor: 50.0
+
+  use_bendlabs: true
+  num_bendlabs_sensors: 4
 
   # ================== Camera Configuration ==================
   cameras:
@@ -24,41 +67,42 @@ dataset:
       height: 480
       width: 640
       channels: 3
+    wrist_camera:
+      height: 480
+      width: 640
 
   # ================== Observation (state) features ==================
   # key: feature name used in the dataset
   # value: list of ints representing the shape
   states:
-    observation.qpos: [6]
-    observation.qvel: [6]
-    observation.eef.position: [3]
-    observation.eef.linear_velocity: [3]
-    observation.eef.angular_velocity: [3]
-    observation.eef.rotation_ortho6: [6]
-    observation.eef.rotation_axis_angle: [3]
+    observation.state: [7]
     observation.ft: [6]
 
   # ================== Action features ==================
   actions:
-    action.joint: [6]
-    action.position: [3]
-    action.rotation_ortho6: [6]
-    action.rotation_axis_angle: [3]
-    action.stiffness_diag: [6]
-    action.delta_position: [3]
-    action.delta_rotation: [3]
-
-  # ================== Replay Configuration ==================
-  replay: raw_actions
-  render: true
-
-  # ================== Action Configuration ==================
-  raw_actions:
-    action.position: [3]
-    action.rotation_ortho6: [6]
-    action.stiffness_diag: [6]
+    action: [7]
 
   # ================== Image Writer ==================
   image_writer:
-    num_processes: 0
+    num_processes: 1
     threads_per_camera: 4
+
+
+  # ===================== PKL =======================
+  pkl_path: "${.root}/data/processed_data_pkl/expert_demos/franka_env/bottle_open_06/demo_0000.pkl"
+  # If set, replay_pkl.py loads a ROBOT_PKL demo file by task name + demo
+  # number (episode_idx) instead of pkl_path -- the real,
+  # vision-tracking-derived poses written by convert_pkl_human_to_robot.py:
+  #   {dataset.dir}/processed_data_pkl/expert_demos/{env_name}/{task_name}/demo_{episode_idx:04d}.pkl
+  task_name: null
+  # expert_demos subfolder for the task_name path above -- matches
+  # run_pipeline.sh's ENV_NAME default.
+  env_name: franka_env
+
+  # ============== Live replay visualization (replay_pkl.py) ==============
+  # If true, subscribes to both cameras, reprojects the commanded gripper's
+  # 9 keypoints onto each live frame, and publishes the annotated pair on
+  # ~replay_visualization (view with e.g. rqt_image_view). Non-critical --
+  # never blocks or interrupts replay if cameras aren't available.
+  publish_visualization: true
+  calib_path: "${.root}/dependencies/Point-Policy/calib/calib.npy"

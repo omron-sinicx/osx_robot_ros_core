@@ -12,7 +12,7 @@ d_gains: [0, 0, 0, 0, 0, 0]
 selection_matrix: [1, 1, 1, 1, 1, 1]
 error_scale: 0.9
 iterations: 1.0
-stiffness: 800
+stiffness: 1500
 
 safety_parameters:
   max_force_torque: [70, 10]
@@ -20,11 +20,15 @@ safety_parameters:
   max_delta_rotation: [5.0, 5.0, 15.0]
   workspace_range:
     x: [ -0.3, 0.30]
-    y: [-0.0, 0.60]
+    y: [-0.0, 0.80]
     z: [ -0.0, 0.80]
   stiffness_limits:
     translation: [50, 1500]
     rotation: [10, 1000]
 
 # TODO: CHANGE!! before using for new environments
-init_qpos: [0.6872, -1.2825, 1.8885, -2.1059, -1.4313, 0.3282]
+# [77, -126, 83, -47, -89, -16]
+# init_qpos: [0.6872, -1.2825, 1.8885, -2.1059, -1.4313, 0.3282]
+# init_qpos: [1.57, -1.57, 1.57, -1.57, -1.57, -1.57]
+init_qpos: [1.5354812780963343, -1.3652067345431824, 1.7058106660842896, -1.6475078068175257, -1.7333229223834437, -0.6028292814837855]
+

@@ -1,0 +1,23 @@
+# Config for scripts/collect_image_data.py
+#
+# CLI flags always override values here, e.g.:
+#   rosrun osx_ur5e collect_image_data.py --task_name pick_cup
+# will use task_name=pick_cup regardless of what's set below.
+
+# Name of the task / demo folder. Required (here or via --task_name).
+task_name: null
+
+# Root data directory. Output goes to <data_dir>/processed_data/<task_name>/demonstration_N/
+data_dir: /root/osx-ur/data
+
+# ROS camera namespaces, in [cam_1, cam_2] order.
+#
+# IMPORTANT: this order must match the cam_1/cam_2 assignment baked into
+# calib/calib.npy (see collect_data_config.yaml). Per that file,
+# cam_1 = serial 040322073651 = wrist_camera, cam_2 = serial 143322073893 =
+# front_camera. Do not reorder unless calib.npy is regenerated/relabeled.
+cam_namespaces:
+  - "wrist_camera"
+  - "front_camera"
+
+fps: 30

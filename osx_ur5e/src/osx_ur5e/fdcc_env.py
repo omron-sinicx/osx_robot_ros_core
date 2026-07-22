@@ -1,4 +1,3 @@
-from comet.common.utils.vt_utils import process_factored_action_dict
 import rospy
 import numpy as np
 from omegaconf import DictConfig
@@ -92,6 +91,7 @@ class FDCCEnv(BaseEnv):
             Prepare the action for the controller.
         """
         if "action.contact_direction" in action:  # FVT mode
+            from comet.common.utils.vt_utils import process_factored_action_dict
             fvt_action = process_factored_action_dict(action,
                                                       default_stiffness=self.controller_config.stiffness,
                                                       default_stiffness_rot=self.controller_config.stiffness,

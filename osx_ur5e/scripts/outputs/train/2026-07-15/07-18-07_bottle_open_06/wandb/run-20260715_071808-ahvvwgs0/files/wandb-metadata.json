@@ -1,0 +1,47 @@
+{
+  "os": "Linux-6.8.0-90-generic-x86_64-with-glibc2.35",
+  "python": "CPython 3.10.12",
+  "startedAt": "2026-07-15T07:18:08.238176Z",
+  "args": [
+    "--dataset.repo_id=bottle_open_06_lerobot",
+    "--dataset.root=data/bottle_open_06_lerobot/",
+    "--policy.type=custom_act",
+    "--job_name=bottle_open_06",
+    "--policy.device=cuda",
+    "--policy.push_to_hub=false",
+    "--wandb.enable=true",
+    "--steps=200000"
+  ],
+  "program": "/usr/local/bin/lerobot-train",
+  "git": {
+    "remote": "https://github.com/omron-sinicx/osx_robot_ros_core",
+    "commit": "bda091dafafa9627e9e8c1aadfee6abbe0810f6d"
+  },
+  "root": "outputs/train/2026-07-15/07-18-07_bottle_open_06",
+  "host": "osx-env",
+  "executable": "/usr/bin/python",
+  "cpu_count": 12,
+  "cpu_count_logical": 20,
+  "gpu": "NVIDIA GeForce RTX 3070",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "1006450962432",
+      "used": "934445596672"
+    }
+  },
+  "memory": {
+    "total": "16533942272"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 3070",
+      "memoryTotal": "8589934592",
+      "cudaCores": 5888,
+      "architecture": "Ampere",
+      "uuid": "GPU-5647c9bc-8feb-0cfd-1278-b2d51516cdfd"
+    }
+  ],
+  "cudaVersion": "13.0",
+  "writerId": "atvpfap6649bhcndf1z6rfgtr2wkcj56"
+}
