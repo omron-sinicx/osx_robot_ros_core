@@ -31,4 +31,12 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
 
+  <!-- Python deps of scripts/tracking_node.py. torch is intentionally not
+       listed here: apt's python3-torch (1.8.1, CPU-only) is unsuitable for
+       this project's CUDA workloads, so it stays pip-managed instead. -->
+  <exec_depend>python3-rich</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
 </package>
