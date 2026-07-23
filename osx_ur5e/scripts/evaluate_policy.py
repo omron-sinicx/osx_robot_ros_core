@@ -109,5 +109,8 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     if "hydra.run.dir" not in " ".join(sys.argv):
-        sys.argv.append("paths.script=/eval")
+        # Everything (hydra files, logs, eval artifacts) lands under the checkpoint.
+        sys.argv.append(
+            "hydra.run.dir=${eval.base.load_ckpt}/eval/${now:%Y-%m-%d_%H-%M-%S}"
+        )
     main()
