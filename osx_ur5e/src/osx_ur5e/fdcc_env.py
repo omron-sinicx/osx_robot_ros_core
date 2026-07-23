@@ -2,9 +2,7 @@ from comet.common.utils.vt_utils import (
     process_factored_action_dict,
     compute_directional_stiffness_diagonal,
 )
-from comet.common.datasets.dataset_info_utils import ensure_world_direction_frame, load_characteristic_length
 from comet.common.utils.env_config_compat import (
-    legacy_dataset_dir,
     resolve_cam_names,
     resolve_control_frequency,
     resolve_env_meta_from_config,
@@ -61,28 +59,10 @@ class FDCCEnv(BaseEnv):
         self.load_characteristic_length(config)
 
     def load_characteristic_length(self, config):
-        """Read characteristic_length: a standalone eval_config.yaml's ``env``
-        block, else the dataset's info.json, else fall back with a warning."""
-        env_meta = resolve_env_meta_from_config(config)
-        if env_meta is not None:
-            self.characteristic_length = env_meta
-            rospy.loginfo(f"characteristic_length={self.characteristic_length} (from eval_config.yaml)")
-            return
-
-        try:
-            from lerobot.datasets.utils import load_info
-            dataset_dir = legacy_dataset_dir(config)
-            info = load_info(dataset_dir)
-        except Exception as e:
-            self.characteristic_length = 0.1
-            rospy.logwarn(f"Could not read characteristic_length from dataset: {e}. "
-                          f"Using default={self.characteristic_length}")
-            return
-        # Outside the fallback: a tool-frame dataset (removed L1 experiment)
-        # must abort, not silently run with world-frame reconstruction.
-        ensure_world_direction_frame(info)
-        self.characteristic_length = load_characteristic_length(info)
-        rospy.loginfo(f"characteristic_length={self.characteristic_length} (from dataset info.json)")
+        """Read characteristic_length from the config's ``env`` block (baked
+        into the checkpoint's eval_config.yaml at training/migration time)."""
+        self.characteristic_length = resolve_env_meta_from_config(config)
+        rospy.loginfo(f"characteristic_length={self.characteristic_length} (from eval_config.yaml)")
 
     def set_controller_parameters(self):
         p_gains = self.controller_config['p_gains']
