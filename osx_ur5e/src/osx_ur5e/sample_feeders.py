@@ -122,9 +122,13 @@ class RosSampleFeeder:
         # (receive_time, Sample-with-raw-msg) per canonical key
         self._latest: Dict[str, tuple] = {}
         self._decoders: Dict[str, Callable] = {}
+        # Resolved topic per canonical key, so consumers (e.g. rosbag rollout
+        # recording) can reuse the exact topics this feeder subscribed to.
+        self.topics: Dict[str, str] = {}
 
         def subscribe(key, topic, msg_type, to_value):
             self._decoders[key] = to_value
+            self.topics[key] = topic
             rospy.Subscriber(topic, msg_type, self._make_cb(key),
                              queue_size=1, tcp_nodelay=True)
 

@@ -77,6 +77,17 @@ def main(cfg: DictConfig) -> None:
 
         env = FDCCEnv(config=adapter.env_config)
 
+        rollout_recorder = None
+        if OmegaConf.select(cfg, "eval.record_rosbag", default=False):
+            from osx_ur5e.rosbag_recorder import RosbagRecorder
+
+            extra_topics = list(
+                OmegaConf.select(cfg, "eval.rosbag_extra_topics", default=[]) or []
+            )
+            topics = RosbagRecorder.default_topics(env.feeder, extra_topics)
+            rollout_recorder = RosbagRecorder(topics)
+            rospy.loginfo(f"Rosbag rollout recording enabled: {topics}")
+
         rospy.loginfo(f"Pad to square: {adapter.pad_to_square}")
         if adapter.pad_to_square:
             rospy.loginfo("Images: padding to square before resizing (matches training)")
@@ -100,6 +111,7 @@ def main(cfg: DictConfig) -> None:
             ),
             setup_logging_fn=setup_logging,
             stop_events=stop_events,
+            rollout_recorder=rollout_recorder,
         )
         runner.run()
     finally:
