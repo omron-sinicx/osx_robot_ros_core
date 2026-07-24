@@ -115,9 +115,13 @@ def build_env_action(frame: dict, action_type: str, replay_action_keys: list) ->
     elif action_type == "virtual_target_actions":
         env_action["action.virtual_target_position"] = frame_np["action.virtual_target_position"]
         env_action["action.virtual_target_rotation"] = frame_np["action.virtual_target_rotation"]
-        env_action["action.estimated_stiffness"] = frame_np["action.estimated_stiffness"]
-        env_action["action.ref_position"] = frame_np["observation.eef.position"]
-        env_action["action.ref_rotation_ortho6"] = frame_np["observation.eef.rotation_ortho6"]
+        env_action["action.vt_estimated_stiffness"] = frame_np["action.vt_estimated_stiffness"]
+        if "action.vt_ref_position" in frame_np:
+            env_action["action.vt_ref_position"] = frame_np["action.vt_ref_position"]
+            env_action["action.vt_ref_rotation_ortho6"] = frame_np["action.vt_ref_rotation_ortho6"]
+        else:
+            env_action["action.vt_ref_position"] = frame_np["observation.eef.position"]
+            env_action["action.vt_ref_rotation_ortho6"] = frame_np["observation.eef.rotation_ortho6"]
     elif action_type == "factored_actions":
         env_action["action.ref_position"] = frame_np["action.ref_position"]
         env_action["action.ref_rotation_ortho6"] = frame_np["action.ref_rotation_ortho6"]

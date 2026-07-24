@@ -100,8 +100,10 @@ def build_env_action(frame: dict, action_type: str, replay_action_keys: list) ->
         env_action["action.stiffness_diag"] = frame_np["action.stiffness_diag"]
     elif action_type == "virtual_target_actions":
         env_action["action.virtual_target_position"] = frame_np["action.virtual_target_position"]
-        env_action["action.virtual_target_orientation"] = transformations.quaternion_from_ortho6(frame["action.virtual_target_orientation"])
-        env_action["action.stiffness_diag"] = frame_np["action.stiffness_diag"]
+        env_action["action.virtual_target_rotation"] = frame_np["action.virtual_target_rotation"]
+        env_action["action.vt_ref_position"] = frame_np["action.vt_ref_position"]
+        env_action["action.vt_ref_rotation_ortho6"] = frame_np["action.vt_ref_rotation_ortho6"]
+        env_action["action.vt_estimated_stiffness"] = frame_np["action.vt_estimated_stiffness"]
     elif action_type == "factored_actions":
         env_action["action.ref_position"] = frame_np["action.ref_position"]
         env_action["action.ref_rotation_ortho6"] = frame_np["action.ref_rotation_ortho6"]

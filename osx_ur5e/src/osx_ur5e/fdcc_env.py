@@ -159,17 +159,17 @@ class FDCCEnv(BaseEnv):
                                                              use_isotropic_stiffness=False,
                                                              orientation_representation="quaternion",
                                                              full_stiffness_matrix=True)
-        elif "action.virtual_target_position" in action:  # VT mode
-            self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
+        elif "action.virtual_target_position" in action:  # VT mode (vt_-scoped columns)
+            self.last_compliance_stiffness = action["action.vt_estimated_stiffness"].item()
             vt_pos = action["action.virtual_target_position"]
             vt_rot_ortho6 = action["action.virtual_target_rotation"]
-            estimated_stiffness = action["action.estimated_stiffness"]
+            estimated_stiffness = action["action.vt_estimated_stiffness"]
 
             stiffness_val = float(estimated_stiffness[0]) if np.ndim(estimated_stiffness) > 0 else float(estimated_stiffness)
 
-            if "action.ref_position" in action:
-                ref_position = action["action.ref_position"]
-                ref_rotation_ortho6 = action["action.ref_rotation_ortho6"]
+            if "action.vt_ref_position" in action:
+                ref_position = action["action.vt_ref_position"]
+                ref_rotation_ortho6 = action["action.vt_ref_rotation_ortho6"]
             else:
                 current_eef = self.arm.end_effector()
                 ref_position = current_eef[:3]
