@@ -105,7 +105,7 @@ def format_real_robot_observations(
     Raw observations come from the shared ObservationAssembler - the exact
     implementation the offline bag converter uses to build training data -
     then get torch-ified into the format the COMET policy expects (float32
-    states, uint8 CHW images resized to training resolution).
+    states, float32 [0, 1] CHW images resized to training resolution).
 
     Args:
         arm: CompliantController from FDCCEnv (provides the kinematics).
@@ -147,7 +147,10 @@ def format_real_robot_observations(
             image_chw = _image_hwc_to_chw(value)
             if image_chw.dtype != np.uint8:
                 image_chw = np.clip(image_chw, 0, 255).astype(np.uint8)
-            image = torch.tensor(image_chw, dtype=torch.uint8)
+            # Training pads/resizes float images in [0, 1] (RAM-cache build),
+            # and the checkpoint's dataset_stats.pt image MIN_MAX stats are in
+            # [0, 1] space — feeding [0, 255] here breaks normalize_inputs.
+            image = torch.tensor(image_chw, dtype=torch.uint8).float().div_(255.0)
             if pad_to_square:
                 image = _pad_to_square(image)
             obs[key] = resize_transform(image)
