@@ -28,6 +28,9 @@ Usage:
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
     q      - early-stop current rollout, record, and continue to the next
+    y/n    - after each rollout, label it success/failure (an optional note may
+             follow, e.g. "n slipped off the edge"); labels land in results.json
+             and MLflow
 """
 
 from __future__ import annotations
