@@ -115,6 +115,20 @@ class RosbagRecorder:
                     logger.warning("Expected bag not found: %s", self._bag_path)
         self._bag_path = None
 
+    def discard_rollout(self) -> None:
+        """Stop recording and delete the bag (rollout attempt was restarted)."""
+        bag_path = self._bag_path
+        self.end_rollout()
+        if bag_path is None:
+            return
+        for p in (bag_path, bag_path.with_suffix(".bag.active")):
+            if p.exists():
+                try:
+                    p.unlink()
+                    logger.info("Discarded rollout rosbag: %s", p)
+                except OSError as e:
+                    logger.warning("Failed to delete discarded bag %s: %s", p, e)
+
     def _kill_running(self) -> None:
         if self._proc is not None:
             self.end_rollout()

@@ -28,6 +28,8 @@ Usage:
 Controls during each rollout:
     Enter  - confirm start of rollout (after reset prompt)
     q      - early-stop current rollout, record, and continue to the next
+    r      - restart current rollout: discard the attempt (no artifacts, no
+             record) and rerun the same rollout id after a scene reset
     y/n    - after each rollout, label it success/failure (an optional note may
              follow, e.g. "n slipped off the edge"); labels land in results.json
              and MLflow
@@ -71,7 +73,7 @@ def _to_env_action(adapter, action_dict, actions_as_deltas):
 )
 def main(cfg: DictConfig) -> None:
     rospy.init_node("evaluate_policy")
-    stop_events = {"stop": False}
+    stop_events = {"stop": False, "restart": False}
     kb_listener = start_stop_listener(stop_events)
     try:
         policy_filename = OmegaConf.select(cfg, "eval.policy_filename", default="best_ema_policy.ckpt")
