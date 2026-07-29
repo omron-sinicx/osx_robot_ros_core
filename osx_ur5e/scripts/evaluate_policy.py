@@ -16,6 +16,10 @@ Usage:
     # Override eval settings:
     python evaluate_policy.py eval.num_rollouts=5 eval.max_timesteps=500
 
+    # Resume a crashed eval in its original directory (continues at the next
+    # rollout id from results.json; stats recomputed over old + new rollouts):
+    python evaluate_policy.py eval.resume_dir=/path/to/ckpt/eval/2026-07-27_10-52-01
+
     # Async inference:
     python evaluate_policy.py eval.inference.mode=async
 
@@ -125,9 +129,16 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    # eval.resume_dir=<existing eval dir> reruns in place: the runner picks up
+    # prior rollouts from its results.json and continues the numbering.
+    resume_dir = next(
+        (arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("eval.resume_dir=")),
+        None,
+    )
+    if resume_dir in ("", "null", "None"):
+        resume_dir = None
     if "hydra.run.dir" not in " ".join(sys.argv):
         # Everything (hydra files, logs, eval artifacts) lands under the checkpoint.
-        sys.argv.append(
-            "hydra.run.dir=${eval.base.load_ckpt}/eval/${now:%Y-%m-%d_%H-%M-%S}"
-        )
+        run_dir = resume_dir or "${eval.base.load_ckpt}/eval/${now:%Y-%m-%d_%H-%M-%S}"
+        sys.argv.append(f"hydra.run.dir={run_dir}")
     main()
