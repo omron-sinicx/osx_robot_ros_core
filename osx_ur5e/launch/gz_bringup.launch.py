@@ -4,9 +4,15 @@
 #   ros2 launch osx_ur5e gz_bringup.launch.py            # with GUI
 #   ros2 launch osx_ur5e gz_bringup.launch.py gui:=false # headless server (CI)
 #
-# Provides everything ur_control's Arm needs: /robot_description + TF
-# (robot_state_publisher), /joint_states (joint_state_broadcaster) and the
-# scaled_joint_trajectory_controller FollowJointTrajectory action.
+# Provides everything ur_control's Arm and CompliantController need: /robot_description + TF
+# (robot_state_publisher), /joint_states (joint_state_broadcaster), the
+# scaled_joint_trajectory_controller FollowJointTrajectory action, /wrench +
+# /wrench/filtered (force_torque_sensor_broadcaster + ft_filter) and an inactive
+# cartesian_compliance_controller for FDCC.
+#
+# Note: use_gazebo_sim / use_real_robot are node parameters read from the hydra config by the
+# entry points (both default to False), not launch arguments -- run the env with
+# `+use_gazebo_sim=true` against this bringup.
 
 import os
 
@@ -87,6 +93,17 @@ def generate_launch_description():
         arguments=["joint_state_broadcaster", "-c", "/controller_manager",
                    "--controller-manager-timeout", "120"],
     )
+    # Publishes the wrist FT sensor on /wrench so ur_control's Arm reads it unchanged
+    # (FT_SUBSCRIBER='wrench'). --controller-ros-args remaps the controller node itself (the
+    # broadcaster publishes ~/wrench); a Node-level remap would only touch the short-lived
+    # spawner process, not the controller running inside controller_manager.
+    fts_spawner = Node(
+        package="controller_manager", executable="spawner", output="screen",
+        arguments=["force_torque_sensor_broadcaster", "-c", "/controller_manager",
+                   "--controller-manager-timeout", "120",
+                   "--controller-ros-args",
+                   "-r /force_torque_sensor_broadcaster/wrench:=/wrench"],
+    )
     jtc_spawner = Node(
         package="controller_manager", executable="spawner", output="screen",
         arguments=["scaled_joint_trajectory_controller", "-c", "/controller_manager",
@@ -97,8 +114,30 @@ def generate_launch_description():
         arguments=["forward_velocity_controller", "-c", "/controller_manager",
                    "--inactive", "--controller-manager-timeout", "120"],
     )
+    # Loaded inactive; ur_control's CompliantController activates it. Its wrench input
+    # (~/ft_sensor_wrench) is remapped to /wrench/filtered, ft_filter's output.
+    compliance_spawner = Node(
+        package="controller_manager", executable="spawner", output="screen",
+        arguments=["cartesian_compliance_controller", "-c", "/controller_manager",
+                   "--inactive", "--controller-manager-timeout", "120",
+                   "--controller-ros-args",
+                   "-r /cartesian_compliance_controller/ft_sensor_wrench:=/wrench/filtered"],
+    )
 
-    # Order: spawn model -> joint_state_broadcaster -> trajectory/velocity controllers.
+    # Butterworth-filtered, zeroable republish of the FT sensor: subscribes to /wrench (from
+    # the broadcaster) and publishes /wrench/filtered plus a /wrench/filtered/zero_ftsensor
+    # service. ur_control's Arm prefers the filtered topic and needs that service for
+    # zero_ft_sensor(). (The real-robot launch wires this differently: there the UR driver
+    # spawns its own broadcaster with no remap, so ft_filter reads
+    # /force_torque_sensor_broadcaster/wrench directly.)
+    ft_filter = Node(
+        package="ur_control_examples", executable="ft_filter", output="screen",
+        arguments=["-t", "wrench"],
+        parameters=[{"use_sim_time": True}],
+    )
+
+    # Order: spawn model -> joint_state_broadcaster -> FT broadcaster + trajectory
+    # controller -> velocity and compliance controllers.
     return LaunchDescription([
         gz_resource_path,
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
@@ -107,7 +146,12 @@ def generate_launch_description():
         robot_state_publisher,
         clock_bridge,
         gz_sim,
+        ft_filter,
         spawn_entity_delayed,
         RegisterEventHandler(OnProcessExit(target_action=spawn_entity, on_exit=[jsb_spawner])),
-        RegisterEventHandler(OnProcessExit(target_action=jsb_spawner, on_exit=[jtc_spawner, fvc_spawner])),
+        RegisterEventHandler(
+            OnProcessExit(target_action=jsb_spawner, on_exit=[fts_spawner, jtc_spawner])),
+        RegisterEventHandler(
+            OnProcessExit(target_action=jtc_spawner,
+                          on_exit=[fvc_spawner, compliance_spawner])),
     ])

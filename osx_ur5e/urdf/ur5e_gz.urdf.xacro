@@ -86,12 +86,45 @@
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
     </joint>
+
+    <!-- Wrist force-torque sensor. Mirrors the real ur_robot_driver's tcp_fts_sensor
+         (force.x..torque.z). gz_ros2_control's GazeboSimSystem backs these state interfaces
+         from the gz force_torque sensor of the SAME name, defined on wrist_3_joint below.
+         force_torque_sensor_broadcaster reads them and publishes the wrench. -->
+    <sensor name="${tf_prefix}tcp_fts_sensor">
+      <state_interface name="force.x"/>
+      <state_interface name="force.y"/>
+      <state_interface name="force.z"/>
+      <state_interface name="torque.x"/>
+      <state_interface name="torque.y"/>
+      <state_interface name="torque.z"/>
+    </sensor>
   </ros2_control>
 
   <gazebo>
     <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
       <parameters>$(arg controllers_file)</parameters>
     </plugin>
+    <!-- gz force_torque sensors are inert without this system (stock empty.sdf does not
+         load it). It scans the world for force_torque sensors, computes each joint's
+         reaction wrench and publishes it on the sensor's gz topic, which gz_ros2_control
+         auto-discovers and exposes as the tcp_fts_sensor interfaces above. -->
+    <plugin filename="gz-sim-forcetorque-system" name="gz::sim::systems::ForceTorque"/>
+  </gazebo>
+
+  <!-- Attached to wrist_3_joint: a real revolute joint, so the physics engine models it as a
+       constraint and reports its reaction wrench (a fixed joint would be lumped away).
+       Reported in the child (wrist_3_link) frame; the broadcaster stamps
+       frame_id=wrist_3_link and consumers transform via TF. -->
+  <gazebo reference="${tf_prefix}wrist_3_joint">
+    <sensor name="${tf_prefix}tcp_fts_sensor" type="force_torque">
+      <always_on>true</always_on>
+      <update_rate>500</update_rate>
+      <force_torque>
+        <frame>child</frame>
+        <measure_direction>child_to_parent</measure_direction>
+      </force_torque>
+    </sensor>
   </gazebo>
 
 </robot>

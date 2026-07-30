@@ -1,0 +1,50 @@
+# FZI Cartesian compliance controller (FDCC) for the *real* UR5e.
+#
+# Loaded inactive by connect_real_robot.launch.py through
+# `spawner --param-file`, so the UR driver keeps its own ur_controllers.yaml
+# untouched. ur_control's CompliantController activates it on demand (it claims
+# the same position command interfaces as scaled_joint_trajectory_controller, so
+# only one of the two runs at a time) and overrides stiffness / pd_gains /
+# selection matrix at runtime via <controller>/set_parameters.
+#
+# Defaults below mirror config/hydra/controller/ur5e.yaml.
+cartesian_compliance_controller:
+  ros__parameters:
+    type: cartesian_compliance_controller/CartesianComplianceController
+
+    # KDL chain base_link -> tool0 (the UR driver's FT frame_id is also tool0).
+    robot_base_link: base_link
+    end_effector_link: tool0
+    compliance_ref_link: tool0
+    # Frame the wrench on ft_sensor_wrench is expressed in. The launch remaps that
+    # input to /wrench/filtered (ft_filter's output, sourced from the driver's
+    # force_torque_sensor_broadcaster, whose frame_id is tool0).
+    ft_sensor_ref_link: tool0
+
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces:
+      - position
+
+    stiffness:  # w.r.t. compliance_ref_link
+      trans_x: 800.0
+      trans_y: 800.0
+      trans_z: 800.0
+      rot_x: 20.0
+      rot_y: 20.0
+      rot_z: 20.0
+    solver:
+      error_scale: 0.9
+      iterations: 1
+    pd_gains:
+      trans_x: {p: 0.05, d: 0.0}
+      trans_y: {p: 0.05, d: 0.0}
+      trans_z: {p: 0.05, d: 0.0}
+      rot_x: {p: 0.1, d: 0.0}
+      rot_y: {p: 0.1, d: 0.0}
+      rot_z: {p: 0.1, d: 0.0}

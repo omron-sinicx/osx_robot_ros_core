@@ -1,35 +1,42 @@
-# UR5e ROS Package
+# UR5e ROS 2 Package
 
-ROS integration for the UR5e arm: bringup, teleop data collection (LeRobot), replay, and COMET policy evaluation.
+ROS 2 integration for the UR5e arm: bringup, teleop data collection (LeRobot), replay, and COMET policy evaluation.
 
-# Workspaces
-- catkin_ws
-- underlay_ws
+# Workspace
 
-# Important packages
-- catkin_ws/osx_ur5e
-    - connect to the robot `roslaunch osx_ur5e connect_real_robot.launch`
-    - connect to cameras `roslaunch osx_ur5e camera_bringup.launch`
-- catkin_ws/osx_gello
-    - connect to the robot `roslaunch osx_gello dynamixel_controllers.launch use_rviz:=0 enable_gravity_compensation:=1`
+A single colcon workspace at the repo root: `ws/`. Activate it with `pixi shell` or from inside the
+Docker container — see the repo README for both paths.
+
+# Launch files
+
+| Command | What it does |
+|---------|--------------|
+| `ros2 launch osx_ur5e connect_real_robot.launch.py` | Real UR5e via `ur_robot_driver` + this cell's calibration, filtered wrench on `/wrench/filtered`, FDCC loaded inactive |
+| `ros2 launch osx_ur5e camera_bringup.launch.py` | The two RealSense cameras on `/front_camera/...` and `/wrist_camera/...` |
+| `ros2 launch osx_ur5e gz_bringup.launch.py` | Gazebo (gz Harmonic) simulation with the same controllers, wrench topics and FDCC |
+| `ros2 launch ur_description view_ur.launch.py ur_type:=ur5e` | Just view the arm model in RViz |
+
+Gello teleoperation lives in a separate `osx_gello` package that is not part of this workspace.
 
 # Data Collection
 Command:
-`rosrun osx_ur5e data_collection.py --config config/data_collection.yaml --task "Wipe the table" --num-episodes 5 --resume`
+`ros2 run osx_ur5e data_collection dataset.task="Wipe the table" dataset.num_episodes=5`
 
 ## LeRobot pipeline
 
 All three scripts use [Hydra](https://hydra.cc/). **Data collection** and **replay** load configs from `config/hydra/`. **Policy evaluation** loads a COMET eval config from `dependencies/comet/configs/` (must still define `dataset` and `controller` for `FDCCEnv`).
 
-Prerequisites: robot in Remote mode, `connect_real_robot.launch` (+ cameras for collection).
+Prerequisites: robot in Remote mode, `connect_real_robot.launch.py` (+ `camera_bringup.launch.py`
+for collection). Against `gz_bringup.launch.py` instead, add `+use_gazebo_sim=true` — it is a node
+parameter read from the Hydra config, and it defaults to `false` (i.e. real robot).
 
 ### `data_collection.py`
 
 Teleoperate with Gello and save a LeRobot dataset.
 
 ```bash
-rosrun osx_ur5e data_collection.py
-rosrun osx_ur5e data_collection.py --config-name=my_task dataset.num_episodes=10
+ros2 run osx_ur5e data_collection
+ros2 run osx_ur5e data_collection --config-name=my_task dataset.num_episodes=10
 ```
 
 | Key | Meaning |
@@ -45,8 +52,8 @@ Writes to `{dataset.dir}/{repo_id}/`. Saves resolved Hydra config under `meta/hy
 Replay one recorded episode on the real robot via `FDCCEnv` (open-loop).
 
 ```bash
-rosrun osx_ur5e replay_episode.py
-rosrun osx_ur5e replay_episode.py dataset.episode_idx=3
+ros2 run osx_ur5e replay_episode
+ros2 run osx_ur5e replay_episode dataset.episode_idx=3
 ```
 
 Uses `dataset.replay` (e.g. `raw_actions`) and the matching action group (`dataset.raw_actions`). Press `Enter` to start after reset.
@@ -56,8 +63,8 @@ Uses `dataset.replay` (e.g. `raw_actions`) and the matching action group (`datas
 Run a trained COMET diffusion policy on the robot via `FDCCEnv`.
 
 ```bash
-rosrun osx_ur5e evaluate_policy.py
-rosrun osx_ur5e evaluate_policy.py eval.num_rollouts=5 eval.max_timesteps=500
+ros2 run osx_ur5e evaluate_policy
+ros2 run osx_ur5e evaluate_policy eval.num_rollouts=5 eval.max_timesteps=500
 ```
 
 Checkpoint path comes from the COMET config (`eval.base.load_ckpt`). Logs and plots go to Hydra’s output directory.
@@ -84,7 +91,8 @@ Example default: `test_task.yaml` + `defaults: [controller: ur5e, _self_]`.
    - `dataset.task` — language instruction stored in frames
    - `dataset.dir` / `dataset.root` — where data is stored
    - `dataset.num_episodes`, `episode_time_s`, `fps`
-   - `dataset.cameras` — names must match live camera topics
+   - `dataset.cameras` — names must match the `camera_name` of a live camera, since
+     `ImageRecorder` subscribes to `/<name>/color/image_raw` (see `camera_bringup.launch.py`)
 3. Adjust `states` / `actions` only if you change what you log.
 4. For replay, set `dataset.replay` and the matching block (e.g. `raw_actions`).
 5. Tune `config/hydra/controller/ur5e.yaml` for a new cell (`init_qpos`, workspace/safety) or add `controller/my_robot.yaml` and set `defaults: [controller: my_robot, _self_]`.
@@ -104,9 +112,9 @@ CLI overrides: `dataset.fps=30`, `controller.stiffness=1000`, etc.
 ## Prerequisites
 
 Before using this package, ensure you have:
-- A UR5e robot with Polyscope interface
-- ROS environment properly configured
-- Docker container setup (if using the provided environment)
+- A UR5e robot with Polyscope interface, running the External Control URCap
+- ROS 2 Jazzy and this workspace built and sourced (`pixi shell`, or the Docker container)
+- This cell's calibration in `config/ur5e_calibration.yaml` (extract it with `ur_calibration`)
 
 ## Robot Setup
 
@@ -139,50 +147,39 @@ Before using this package, ensure you have:
 
 **Step 5: Get Joint Positions**
 ```bash
-rosrun ur_control joint_position_keyboard.py
+ros2 run ur_control_examples joint_position_keyboard
 ```
 - Press `P` to print the current joint configuration
 
 ## Environment Setup
 
-### Using the Provided Docker Environment
-
-The easiest way to set up the environment is using the provided Terminator terminal setup:
-
-1. **Launch the Docker Environment**
-   ```bash
-   cd ~/scu-hand-env
-   ./LAUNCH-TERMINATOR-TERMINAL.sh
-   ```
-
-2. **Start ROS Core**
-   - In the "roscore" terminal, press `r`
-
-3. **Connect to UR5e Robot**
-   - In the "bring-up robots" terminal, press `r`
-
-4. **Connect to SCU HAND Dynamixel Motors**
-   - In the "dynamixel_service" terminal, press `r`
+See the repo README for the two supported setups: a native `pixi` install (`pixi shell`) or the
+Docker container. ROS 2 needs no roscore.
 
 ## Usage
 
-### Manual Connection (Alternative to the LAUNCH-TERMINATOR-TERMINAL Setup)
+Each of these goes in its own terminal, with the workspace sourced.
 
-If you're not using the provided LAUNCH-TERMINATOR-TERMINAL environment, you can connect manually on different terminals:
-
-**Connect to UR5e Robot:**
+**Connect to the UR5e:**
 ```bash
-rosrun osx_ur5e roslaunch osx_ur5e connect_real_robot.launch
+ros2 launch osx_ur5e connect_real_robot.launch.py robot_ip:=10.0.2.15
+```
+Add `use_mock_hardware:=true` to bring the whole stack up without a robot on the network.
+
+**Connect to the cameras:**
+```bash
+ros2 launch osx_ur5e camera_bringup.launch.py
+```
+Color only by default; `enable_depth:=true` also streams depth and color-aligned depth.
+
+**Simulate instead of using hardware:**
+```bash
+ros2 launch osx_ur5e gz_bringup.launch.py           # gui:=false for a headless server
 ```
 
-**Connect to camera:**
+**MoveIt**
 ```bash
-roslaunch osx_ur5e camera_bringup.launch
-```
-
-**Launch MoveIt**
-```bash
-roslaunch osx_moveit_ur5e osx_moveit_planning_execution.launch
+ros2 launch osx_examples moveit_examples.launch.py
 ```
 
 ## Useful Scripts
@@ -191,15 +188,16 @@ roslaunch osx_moveit_ur5e osx_moveit_planning_execution.launch
 
 **Keyboard Teleoperation for Robot:**
 ```bash
-rosrun ur_control joint_position_keyboard.py
+ros2 run ur_control_examples joint_position_keyboard
 ```
 Press SPACE to see the key mappings
 
 ### Advanced Usage
 
-For advanced robot control using the `arm` interface, see the example script:
+For advanced robot control using the `arm` interface, see the example scripts:
 ```bash
-./underlay_ws/src/ur_python_utilities/ur_control/scripts/controller_examples.py
+ros2 run ur_control_examples controller_examples
+ros2 run osx_examples ur_control_examples
 ```
 
 ## Troubleshooting
