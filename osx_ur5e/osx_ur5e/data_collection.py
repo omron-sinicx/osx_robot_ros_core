@@ -264,7 +264,8 @@ def run(cfg: DictConfig) -> None:
     use_gazebo_sim = bool(OmegaConf.select(cfg, "use_gazebo_sim", default=False))
     runtime = RosRuntime("data_collection")
     runtime.node.declare_parameter("use_gazebo_sim", use_gazebo_sim)
-    runtime.node.declare_parameter("use_real_robot", not use_gazebo_sim)
+    # use_real_robot is deliberately left undeclared: URServices probes the UR driver's
+    # dashboard client for it, which cannot disagree with reality the way a config value can.
     if use_gazebo_sim:
         runtime.node.declare_parameter("use_sim_time", True)
 

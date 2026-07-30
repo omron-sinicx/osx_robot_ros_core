@@ -10,9 +10,10 @@
 # /wrench/filtered (force_torque_sensor_broadcaster + ft_filter) and an inactive
 # cartesian_compliance_controller for FDCC.
 #
-# Note: use_gazebo_sim / use_real_robot are node parameters read from the hydra config by the
-# entry points (both default to False), not launch arguments -- run the env with
-# `+use_gazebo_sim=true` against this bringup.
+# Note: use_gazebo_sim is a node parameter read from the hydra config by the entry points
+# (defaulting to False), not a launch argument -- run the env with `+use_gazebo_sim=true`
+# against this bringup. Its counterpart use_real_robot needs no configuring: URServices
+# probes the UR driver's dashboard client, which this bringup does not start.
 
 import os
 
