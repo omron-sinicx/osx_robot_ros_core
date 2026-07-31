@@ -54,6 +54,7 @@ from comet.eval.io import install_sigint_handler, start_stop_listener
 from osx_ur5e.fdcc_env import FDCCEnv
 from osx_ur5e.utils import (
     convert_policy_action,
+    convert_raw_baseline_action,
     format_real_robot_observations,
     setup_logging,
     tensor_dict_to_numpy,
@@ -66,6 +67,8 @@ install_sigint_handler()
 
 def _to_env_action(adapter, action_dict, actions_as_deltas):
     if adapter.trainer == "baseline":
+        if adapter.action_repr == "raw":
+            return convert_raw_baseline_action(action_dict, actions_as_deltas)
         return tensor_dict_to_numpy(action_dict)
     return convert_policy_action(action_dict, actions_as_deltas)
 

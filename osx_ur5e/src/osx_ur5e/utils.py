@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torchvision import transforms
+from ur_control import transformations
 
 from comet.common.utils.image_transforms import pad_to_square as _pad_to_square
 
@@ -213,4 +214,23 @@ def convert_policy_action(action_dict: dict, actions_as_deltas: bool) -> dict:
         else:
             env_action[key] = np_value
 
+    return env_action
+
+
+def convert_raw_baseline_action(action_dict: dict, actions_as_deltas: bool) -> dict:
+    """Convert raw-representation baseline output to the FDCCEnv action dict.
+
+    Raw checkpoints predict the teleop command columns directly:
+    action.position (3,), action.rotation_ortho6 (6,) and
+    action.stiffness_diag (6,). FDCCEnv's raw branch expects the rotation as
+    a quaternion under 'action.orientation'.
+    """
+    if actions_as_deltas:
+        raise ValueError(
+            "Raw baseline checkpoints predict absolute poses (action.rotation_ortho6); "
+            "set controller.actions_as_deltas=false."
+        )
+    env_action = tensor_dict_to_numpy(action_dict)
+    ortho6 = env_action.pop("action.rotation_ortho6")
+    env_action["action.orientation"] = transformations.quaternion_from_ortho6(ortho6)
     return env_action
