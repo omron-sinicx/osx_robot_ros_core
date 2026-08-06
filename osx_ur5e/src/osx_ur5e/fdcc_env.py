@@ -19,6 +19,11 @@ from ur_control import transformations
 
 STIFFNESS_REPRESENTATIONS = ['cholesky', 'diag']
 
+HOME_POSITION_TOLERANCE = 0.01  # m
+HOME_ORIENTATION_TOLERANCE = 0.05  # rad, per axis
+HOME_STALL_TIME = 2.0  # s without the pose error shrinking before giving up
+HOME_MIN_PROGRESS = 0.01  # improvement in normalized error that counts as progress
+
 
 class FDCCEnv(BaseEnv):
     """
@@ -95,20 +100,55 @@ class FDCCEnv(BaseEnv):
 
         return super().reset(move_robot=move_robot)
 
-    def move_to_home(self, timeout=5.0):
+    def move_to_home(self, timeout=5.0, max_time=30.0,
+                     position_tolerance=HOME_POSITION_TOLERANCE,
+                     orientation_tolerance=HOME_ORIENTATION_TOLERANCE,
+                     stall_time=HOME_STALL_TIME):
+        """Servo to the home Cartesian pose under compliance control until it is reached.
+
+        Returns as soon as the pose error is within tolerance. ``timeout`` is only the
+        expected duration, not a cutoff: past it the loop keeps servoing while the error
+        is still shrinking.
+
+        Raises RuntimeError if the pose stops improving for ``stall_time`` seconds or if
+        ``max_time`` runs out.
+        """
         rospy.loginfo("Moving to home Cartesian pose under compliance control...")
         home_cartesian_pose = self.arm.end_effector(joint_angles=self.initial_config)
         start_time = rospy.get_time()
+        deadline = start_time + max(max_time, timeout)
 
-        while rospy.get_time() - start_time < timeout and not rospy.is_shutdown():
+        best_error = np.inf
+        last_progress_time = start_time
+
+        while not rospy.is_shutdown():
             current_pose = self.arm.end_effector()
             delta_translation = home_cartesian_pose[:3] - current_pose[:3]
             delta_orientation = transformations.quaternions_orientation_error(home_cartesian_pose[3:], current_pose[3:])
 
-            position_reached = np.linalg.norm(delta_translation) < 0.01
-            orientation_reached = np.all(np.abs(delta_orientation) < 0.1)
-            if position_reached and orientation_reached:
-                break
+            position_error = np.linalg.norm(delta_translation)
+            orientation_error = np.max(np.abs(delta_orientation))
+            if position_error < position_tolerance and orientation_error < orientation_tolerance:
+                rospy.loginfo(f"Reached home Cartesian pose in {rospy.get_time() - start_time:.1f}s")
+                return
+
+            now = rospy.get_time()
+            if now >= deadline:
+                raise RuntimeError(
+                    f"Failed to reach the home Cartesian pose within {max(max_time, timeout)}s: "
+                    f"position error {position_error:.4f}m, orientation error {orientation_error:.4f}rad")
+
+            error = max(position_error / position_tolerance, orientation_error / orientation_tolerance)
+            if error < best_error - HOME_MIN_PROGRESS:
+                best_error = error
+                last_progress_time = now
+            elif now - start_time > timeout:
+                # Past the expected duration, keep going only while the error keeps shrinking.
+                rospy.logwarn_once(f"Still moving to the home Cartesian pose after {timeout}s")
+                if now - last_progress_time > stall_time:
+                    raise RuntimeError(
+                        f"Motion to the home Cartesian pose stalled for {stall_time}s: "
+                        f"position error {position_error:.4f}m, orientation error {orientation_error:.4f}rad")
 
             clipped_delta_translation, clipped_delta_orientation = self.clip_delta_actions(
                 delta_translation, delta_orientation, 0.04, 0.5)
@@ -119,11 +159,6 @@ class FDCCEnv(BaseEnv):
             self.arm.set_cartesian_target_pose(target_pose)
 
             self.rate.sleep()
-
-        if rospy.get_time() - start_time >= timeout:
-            rospy.logwarn("Timed out before reaching home Cartesian pose")
-        else:
-            rospy.loginfo("Reached home Cartesian pose")
 
     def step(self, action) -> TimeStep:
         # Check force/torque limits here and if needed return StepType.LAST to end episode.
@@ -258,4 +293,3 @@ class FDCCEnv(BaseEnv):
             rospy.logwarn_throttle(1, "\n".join(lines))
 
         return clipped_delta_translation, clipped_delta_orientation
-

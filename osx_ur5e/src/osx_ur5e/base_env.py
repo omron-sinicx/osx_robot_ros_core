@@ -13,6 +13,12 @@ from ur_control.fzi_cartesian_compliance_controller import CompliantController
 
 ORIENTATION_REPRESENTATIONS = ['axis_angle', 'ortho6']
 
+HOME_JOINT_TOLERANCE = 0.005  # rad, per joint
+HOME_JOINT_SPEED = 0.3  # rad/s, used to scale the trajectory duration with the distance left
+HOME_MIN_TRAJECTORY_TIME = 0.5  # s
+HOME_SETTLE_TIME = 0.5  # s, grace after a trajectory before re-issuing it
+HOME_POLL_RATE = 50  # Hz
+
 
 class BaseEnv:
     """
@@ -57,9 +63,40 @@ class BaseEnv:
         self.config = config
         self.initial_config = config.controller.init_qpos
 
-    def go_home(self):
+    def go_home(self, tolerance=HOME_JOINT_TOLERANCE, target_time=5.0, max_time=30.0):
+        """Move to ``initial_config``, returning only once the robot is actually there.
+
+        Returns as soon as every joint is within ``tolerance`` rather than waiting for the
+        whole trajectory, and re-issues the motion as many times as needed if the robot
+        falls short of the goal. ``target_time`` is the duration of a full-swing trajectory;
+        shorter moves get a proportionally shorter one.
+
+        Raises RuntimeError if the configuration is not reached within ``max_time``.
+        """
         assert self.arm.dashboard_services.activate_ros_control_on_ur(), "Failed to activate ROS control on UR"
-        self.arm.set_joint_positions(target_time=5.0, positions=self.initial_config, wait=True)
+
+        target = np.asarray(self.initial_config, dtype=float)
+        deadline = rospy.get_time() + max_time
+        poll = rospy.Rate(HOME_POLL_RATE)
+
+        while not rospy.is_shutdown():
+            joint_error = np.max(np.abs(self.arm.joint_angles() - target))
+            if joint_error < tolerance:
+                return
+            if rospy.get_time() >= deadline:
+                raise RuntimeError(
+                    f"Failed to reach the home joint configuration for robot '{self.arm.ns}' within "
+                    f"{max_time}s: worst joint error {joint_error:.4f} rad > {tolerance} rad")
+
+            trajectory_time = float(np.clip(joint_error / HOME_JOINT_SPEED,
+                                            HOME_MIN_TRAJECTORY_TIME, target_time))
+            self.arm.set_joint_positions(target_time=trajectory_time, positions=target, wait=False)
+
+            segment_deadline = min(rospy.get_time() + trajectory_time + HOME_SETTLE_TIME, deadline)
+            while rospy.get_time() < segment_deadline and not rospy.is_shutdown():
+                if np.max(np.abs(self.arm.joint_angles() - target)) < tolerance:
+                    return
+                poll.sleep()
 
     def get_images(self):
         return self.feeder.get_images()
