@@ -721,7 +721,7 @@ Visualization Manager:
         Goal State Color: 250; 128; 0
         Interactive Marker Size: 0.20000000298023224
         Joint Violation Color: 255; 0; 255
-        Planning Group: a_bot
+        Planning Group: manipulator
         Query Goal State: true
         Query Start State: false
         Show Workspace: false
@@ -1968,18 +1968,18 @@ Visualization Manager:
       Ty: 0.0349
       Tz: 0.0702
       Value: true
-      base: a_bot_base_link
-      camera_info_topic: /camera_multiplexer/camera_info
-      eef: a_bot_ee_link
-      group: b_bot
-      image_topic: /camera_multiplexer/image
+      base: base_link
+      camera_info_topic: /d435i/color/camera_info
+      eef: tool0
+      group: manipulator
+      image_topic: /d435i/color/image_raw
       longest board side (m): 0.150000
       margin size (px): 2
       marker border (bits): 1
       marker size (px): 50
       measured marker size (m): 0.018500
       object: handeye_target
-      sensor: a_bot_outside_camera_color_optical_frame
+      sensor: d435i_color_optical_frame
       sensor_mount_type: 1
       solver: crigroup/Daniilidis1999
       square size (px): 80
@@ -2049,8 +2049,8 @@ Window Geometry:
     collapsed: false
   Vision Result:
     collapsed: false
+  osxSetupPanel:
+    collapsed: false
   Width: 1854
   X: 66
   Y: 32
-  osxSetupPanel:
-    collapsed: false

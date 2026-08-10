@@ -15,7 +15,7 @@
   復帰時は enable_d455_0:=true を渡すか、本ファイルの default を true に戻す。
 -->
 <launch>
-  <arg name="camera_fps"        default="15"/>
+  <arg name="camera_fps"        default="30"/>
   <arg name="camera_width"      default="640"/>
   <arg name="camera_height"     default="480"/>
   <arg name="initial_reset"     default="false"/>

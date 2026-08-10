@@ -12,7 +12,7 @@
   <arg name="calibration_child"	default="$(arg camera_name)_color_optical_frame"/>
 
   <arg name="camera_serial_no"	default="636201000324"/>
-  <arg name="camera_fps"	default="15"/>
+  <arg name="camera_fps"	default="30"/>
   <arg name="depth_fps"	  default="$(arg camera_fps)"/>
   <arg name="camera_width"	default="1280"/>
   <arg name="camera_height"	default="720"/>
@@ -29,6 +29,10 @@
   <arg name="rgb_gain"          default="64"/>
   <arg name="rgb_gamma"         default="300"/>
   <arg name="rgb_saturation"    default="64"/>
+  <!-- Publish a distortion-corrected color stream (Inverse Brown-Conrady) on
+       <camera>/color/image_rect alongside the raw stream. Needed for accurate
+       hand-eye calibration; see scripts/rectify_d455_color. -->
+  <arg name="enable_rectify_color" default="true"/>
   <!-- Synced block end -->
 
   <param name="osx_vision_server/$(arg camera_name)" type="bool" value="true" />
@@ -75,6 +79,15 @@
     <arg name="publish_tf"         value="$(arg calibration_mode)"/>
   </include>
   
+  <node if="$(arg enable_rectify_color)"
+        name="$(arg camera_name)_color_rectifier"
+        pkg="osx_scene_description" type="rectify_d455_color" output="screen">
+    <remap from="image_in"         to="$(arg camera_name)/color/image_raw"/>
+    <remap from="camera_info_in"   to="$(arg camera_name)/color/camera_info"/>
+    <remap from="image_rect"       to="$(arg camera_name)/color/image_rect"/>
+    <remap from="camera_info_rect" to="$(arg camera_name)/color/camera_info_rect"/>
+  </node>
+
   <group unless="$(arg calibration_mode)">
     <include file="$(find osx_scene_description)/launch/publish_camera_calibration.launch">
       <arg name="parent"	value="$(arg calibration_parent)"/>
