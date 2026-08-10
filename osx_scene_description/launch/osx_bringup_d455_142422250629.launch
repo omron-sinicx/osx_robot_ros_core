@@ -16,14 +16,18 @@
     <arg name="camera_width"       value="$(arg camera_width)"/>
     <arg name="camera_height"      value="$(arg camera_height)"/>
     <arg name="initial_reset"      value="$(arg initial_reset)"/>
-    <!-- AE/AWB OFF。141322250927 と同じチューニング値を初期値として継承
-         (exposure=60, WB=3700K, gamma=450, saturation=70)。
-         物理ユニット差・配置・照明差で再調整が必要な可能性あり。 -->
+    <!-- AE/AWB OFF。2026-08-10 に白紙基準で実測チューニング
+         (exposure=31, WB=4300K, gamma=450, saturation=60)。
+         白紙 ROI の R/G・B/G を 1.0 に合わせる 5x5 格子掃引で決定。
+         旧値 exposure=60 は白飛びしており、クリップ由来のマゼンタかぶりが出ていた。
+         saturation は 70→60。色ノイズ (暗部の色差の時間ばらつき) が
+         3.16→2.11 と 33% 減。65 以上はノイズ増が急になるため 60 で止めた。
+         NeRF のフローター低減が目的。照明条件が変わった場合は再調整が必要。 -->
     <arg name="rgb_lock_settings"  value="true"/>
-    <arg name="rgb_exposure"       value="60"/>
-    <arg name="rgb_white_balance"  value="3700"/>
+    <arg name="rgb_exposure"       value="31"/>
+    <arg name="rgb_white_balance"  value="4300"/>
     <arg name="rgb_gain"           value="64"/>
     <arg name="rgb_gamma"          value="450"/>
-    <arg name="rgb_saturation"     value="70"/>
+    <arg name="rgb_saturation"     value="60"/>
   </include>
 </launch>
