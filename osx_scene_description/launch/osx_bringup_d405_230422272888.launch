@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!-- Bring up the close-range D405 currently installed on this system. -->
+<launch>
+  <arg name="camera_name"       default="d405"/>
+  <arg name="camera_serial_no"  default="230422272888"/>
+  <arg name="camera_width"      default="848"/>
+  <arg name="camera_height"     default="480"/>
+  <arg name="camera_fps"        default="30"/>
+  <arg name="align_depth"       default="true"/>
+  <arg name="enable_pointcloud" default="true"/>
+  <arg name="publish_tf"        default="true"/>
+  <arg name="initial_reset"     default="false"/>
+
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+    <arg name="camera"            value="$(arg camera_name)"/>
+    <arg name="tf_prefix"         value="$(arg camera_name)"/>
+    <arg name="serial_no"         value="$(arg camera_serial_no)"/>
+    <arg name="device_type"       value="d405"/>
+    <arg name="depth_width"       value="$(arg camera_width)"/>
+    <arg name="depth_height"      value="$(arg camera_height)"/>
+    <arg name="depth_fps"         value="$(arg camera_fps)"/>
+    <arg name="color_width"       value="$(arg camera_width)"/>
+    <arg name="color_height"      value="$(arg camera_height)"/>
+    <arg name="color_fps"         value="$(arg camera_fps)"/>
+    <arg name="enable_depth"      value="true"/>
+    <arg name="enable_color"      value="true"/>
+    <arg name="enable_infra"      value="false"/>
+    <arg name="enable_infra1"     value="false"/>
+    <arg name="enable_infra2"     value="false"/>
+    <arg name="enable_confidence" value="false"/>
+    <arg name="enable_sync"       value="true"/>
+    <arg name="align_depth"       value="$(arg align_depth)"/>
+    <arg name="enable_pointcloud" value="$(arg enable_pointcloud)"/>
+    <arg name="publish_tf"        value="$(arg publish_tf)"/>
+    <arg name="initial_reset"     value="$(arg initial_reset)"/>
+  </include>
+</launch>

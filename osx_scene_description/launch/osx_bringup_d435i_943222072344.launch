@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="calibration_mode" default="false"/>
+  <arg name="camera_fps"       default="30"/>
+  <arg name="camera_width"     default="1280"/>
+  <arg name="camera_height"    default="720"/>
+  <arg name="initial_reset"    default="false"/>
+
+  <include file="$(find osx_scene_description)/launch/osx_bringup_single_camera.launch">
+    <arg name="camera_name"        value="d435i"/>
+    <arg name="calibration_parent" value="base_link"/>
+    <arg name="calibration_child"  value="d435i_color_optical_frame"/>
+    <arg name="camera_serial_no"   value="943222072344"/>
+    <arg name="calibration_mode"   value="$(arg calibration_mode)"/>
+    <arg name="camera_fps"         value="$(arg camera_fps)"/>
+    <arg name="camera_width"       value="$(arg camera_width)"/>
+    <arg name="camera_height"      value="$(arg camera_height)"/>
+    <arg name="initial_reset"      value="$(arg initial_reset)"/>
+    <arg name="rgb_lock_settings"  value="true"/>
+  </include>
+</launch>
