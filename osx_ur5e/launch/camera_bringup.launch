@@ -10,8 +10,15 @@
   <arg name="camera_height"	default="480"/>
   <arg name="initial_reset"	default="false"/>
   <arg name="enable_depth"	default="false"/>
-  
- 
+
+  <!-- Mains frequency used by the color sensor's anti-flicker auto-exposure.
+       Values follow librealsense RS2_OPTION_POWER_LINE_FREQUENCY:
+       0=Off, 1=50Hz, 2=60Hz, 3=Auto. Set to 50Hz for eastern Japan. -->
+  <arg name="power_line_frequency"	default="1"/>
+
+  <param name="$(arg camera_name)/rgb_camera/power_line_frequency"
+         value="$(arg power_line_frequency)"/>
+
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"		    value="$(arg camera_name)"/>
     <arg name="serial_no"           value="$(arg camera_serial_no)"/>
@@ -33,8 +40,11 @@
 
   <arg name="camera_name2"	value="front_camera"/>
 
-  <arg name="camera_serial_no2"	value="819612071438"/>
+  <arg name="camera_serial_no2"	value="231522071541"/>
   <!-- 141722063620 -->
+
+  <param name="$(arg camera_name2)/rgb_camera/power_line_frequency"
+         value="$(arg power_line_frequency)"/>
 
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"		    value="$(arg camera_name2)"/>
