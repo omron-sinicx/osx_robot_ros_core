@@ -100,6 +100,20 @@ def main(cfg: DictConfig) -> None:
             rollout_recorder = RosbagRecorder(topics)
             rospy.loginfo(f"Rosbag rollout recording enabled: {topics}")
 
+        scene_snapshotter = None
+        if OmegaConf.select(cfg, "eval.marker_wipe.enabled", default=False):
+            from osx_ur5e.marker_snapshotter import SceneMarkerSnapshotter
+
+            scene_snapshotter = SceneMarkerSnapshotter(
+                env.feeder,
+                camera=OmegaConf.select(cfg, "eval.marker_wipe.camera", default="wrist_camera"),
+            )
+            rospy.loginfo(
+                f"Marker-wipe snapshots enabled (camera={scene_snapshotter.camera}); "
+                "snapshots are saved per rollout, scoring is post-hoc via "
+                "comet/scripts/utils/marker_wipe.py"
+            )
+
         rospy.loginfo(f"Pad to square: {adapter.pad_to_square}")
         if adapter.pad_to_square:
             rospy.loginfo("Images: padding to square before resizing (matches training)")
@@ -124,6 +138,7 @@ def main(cfg: DictConfig) -> None:
             setup_logging_fn=setup_logging,
             stop_events=stop_events,
             rollout_recorder=rollout_recorder,
+            scene_snapshotter=scene_snapshotter,
         )
         runner.run()
     finally:
