@@ -16,8 +16,28 @@
        0=Off, 1=50Hz, 2=60Hz, 3=Auto. Set to 50Hz for eastern Japan. -->
   <arg name="power_line_frequency"	default="1"/>
 
+  <!-- Manual color settings for the wrist camera, tuned to match the
+       ur5e-pick-cube-15 demo brightness (mean ~95-98) without flicker:
+       exposure 100 = 10 ms is the shortest flicker-safe integration under
+       50 Hz lighting, which alone reads too bright, so gain sits at its
+       minimum and a negative ISP brightness offset recovers the demo level.
+       Auto-exposure must be off for the manual values to apply;
+       power_line_frequency only matters while auto-exposure is on. -->
+  <arg name="wrist_camera_auto_exposure"	default="false"/>
+  <arg name="wrist_camera_exposure"	default="100"/>
+  <arg name="wrist_camera_gain"	default="0"/>
+  <arg name="wrist_camera_brightness"	default="-25"/>
+
   <param name="$(arg camera_name)/rgb_camera/power_line_frequency"
          value="$(arg power_line_frequency)"/>
+  <param name="$(arg camera_name)/rgb_camera/enable_auto_exposure"
+         value="$(arg wrist_camera_auto_exposure)"/>
+  <param name="$(arg camera_name)/rgb_camera/exposure"
+         value="$(arg wrist_camera_exposure)"/>
+  <param name="$(arg camera_name)/rgb_camera/gain"
+         value="$(arg wrist_camera_gain)"/>
+  <param name="$(arg camera_name)/rgb_camera/brightness"
+         value="$(arg wrist_camera_brightness)"/>
 
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"		    value="$(arg camera_name)"/>
@@ -43,8 +63,27 @@
   <arg name="camera_serial_no2"	value="231522071541"/>
   <!-- 141722063620 -->
 
+  <!-- Manual color settings for the front camera, tuned to match the
+       ur5e-pick-cube-15 demo brightness (mean ~60) without flicker:
+       exposure 100 = 10 ms (flicker-safe under 50 Hz lighting) with minimum
+       gain lands on the demo level directly. Auto-exposure must be off for
+       the manual values to apply; power_line_frequency only matters while
+       auto-exposure is on. -->
+  <arg name="front_camera_auto_exposure"	default="false"/>
+  <arg name="front_camera_exposure"	default="100"/>
+  <arg name="front_camera_gain"	default="0"/>
+  <arg name="front_camera_brightness"	default="0"/>
+
   <param name="$(arg camera_name2)/rgb_camera/power_line_frequency"
          value="$(arg power_line_frequency)"/>
+  <param name="$(arg camera_name2)/rgb_camera/enable_auto_exposure"
+         value="$(arg front_camera_auto_exposure)"/>
+  <param name="$(arg camera_name2)/rgb_camera/exposure"
+         value="$(arg front_camera_exposure)"/>
+  <param name="$(arg camera_name2)/rgb_camera/gain"
+         value="$(arg front_camera_gain)"/>
+  <param name="$(arg camera_name2)/rgb_camera/brightness"
+         value="$(arg front_camera_brightness)"/>
 
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"		    value="$(arg camera_name2)"/>
