@@ -23,10 +23,10 @@
        minimum and a negative ISP brightness offset recovers the demo level.
        Auto-exposure must be off for the manual values to apply;
        power_line_frequency only matters while auto-exposure is on. -->
-  <arg name="wrist_camera_auto_exposure"	default="false"/>
+  <arg name="wrist_camera_auto_exposure"	default="true"/>
   <arg name="wrist_camera_exposure"	default="100"/>
   <arg name="wrist_camera_gain"	default="0"/>
-  <arg name="wrist_camera_brightness"	default="-25"/>
+  <arg name="wrist_camera_brightness"	default="0"/>
 
   <param name="$(arg camera_name)/rgb_camera/power_line_frequency"
          value="$(arg power_line_frequency)"/>
@@ -38,6 +38,31 @@
          value="$(arg wrist_camera_gain)"/>
   <param name="$(arg camera_name)/rgb_camera/brightness"
          value="$(arg wrist_camera_brightness)"/>
+
+  <!-- Auto-exposure metering window, in pixels of the 640x480 colour frame:
+       left/right are columns (0..639), top/bottom are rows (0..479). The
+       wrapper reads these into the region of interest it pushes to the sensor
+       once the first frame arrives, so setting them here fixes the ROI from
+       startup. They matter only while auto-exposure is on.
+
+       The wrist camera meters on the whole frame, inset by 1 px per side: the
+       exact full frame is not a legal ROI, the firmware rejects it and
+       librealsense logs
+         hwmon command 0x75( 0 1df 0 27f ) failed (response -6= Invalid parameter)
+       where 0x27f=639 and 0x1df=479. -->
+  <arg name="wrist_ae_roi_left"	default="1"/>
+  <arg name="wrist_ae_roi_right"	default="638"/>
+  <arg name="wrist_ae_roi_top"	default="1"/>
+  <arg name="wrist_ae_roi_bottom"	default="478"/>
+
+  <param name="$(arg camera_name)/rgb_camera/auto_exposure_roi/left"
+         value="$(arg wrist_ae_roi_left)"/>
+  <param name="$(arg camera_name)/rgb_camera/auto_exposure_roi/right"
+         value="$(arg wrist_ae_roi_right)"/>
+  <param name="$(arg camera_name)/rgb_camera/auto_exposure_roi/top"
+         value="$(arg wrist_ae_roi_top)"/>
+  <param name="$(arg camera_name)/rgb_camera/auto_exposure_roi/bottom"
+         value="$(arg wrist_ae_roi_bottom)"/>
 
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"		    value="$(arg camera_name)"/>
@@ -69,10 +94,10 @@
        gain lands on the demo level directly. Auto-exposure must be off for
        the manual values to apply; power_line_frequency only matters while
        auto-exposure is on. -->
-  <arg name="front_camera_auto_exposure"	default="false"/>
+  <arg name="front_camera_auto_exposure"	default="true"/>
   <arg name="front_camera_exposure"	default="100"/>
   <arg name="front_camera_gain"	default="0"/>
-  <arg name="front_camera_brightness"	default="0"/>
+  <arg name="front_camera_brightness"	default="15"/>
 
   <param name="$(arg camera_name2)/rgb_camera/power_line_frequency"
          value="$(arg power_line_frequency)"/>
@@ -84,6 +109,22 @@
          value="$(arg front_camera_gain)"/>
   <param name="$(arg camera_name2)/rgb_camera/brightness"
          value="$(arg front_camera_brightness)"/>
+
+  <!-- Front camera meters on the workspace only: columns 160..480, lower half
+       of the frame (rows 240..479). See the wrist camera block above. -->
+  <arg name="front_ae_roi_left"	default="160"/>
+  <arg name="front_ae_roi_right"	default="480"/>
+  <arg name="front_ae_roi_top"	default="240"/>
+  <arg name="front_ae_roi_bottom"	default="479"/>
+
+  <param name="$(arg camera_name2)/rgb_camera/auto_exposure_roi/left"
+         value="$(arg front_ae_roi_left)"/>
+  <param name="$(arg camera_name2)/rgb_camera/auto_exposure_roi/right"
+         value="$(arg front_ae_roi_right)"/>
+  <param name="$(arg camera_name2)/rgb_camera/auto_exposure_roi/top"
+         value="$(arg front_ae_roi_top)"/>
+  <param name="$(arg camera_name2)/rgb_camera/auto_exposure_roi/bottom"
+         value="$(arg front_ae_roi_bottom)"/>
 
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"		    value="$(arg camera_name2)"/>
