@@ -117,9 +117,9 @@ class BaseEnv:
 
     def reset(self, move_robot=True):
         if move_robot:
-            # Move away from contact
-            success = self.arm.move_relative(target_time=1.0, transformation=[0, 0, -0.05, 0, 0, 0], relative_to_tcp=True, wait=True)
-            assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.initial_config} {success}"
+            # # Move away from contact
+            # success = self.arm.move_relative(target_time=1.0, transformation=[0, 0, -0.05, 0, 0, 0], relative_to_tcp=True, wait=True)
+            # assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.initial_config} {success}"
             # Move to the initial configuration
             success = self.arm.set_joint_positions(target_time=self.config.controller.reset_time, positions=self.initial_config, wait=True)
             assert success == ExecutionResult.DONE, f"Failed to move to initial configuration for robot '{self.arm.ns}' : {self.initial_config} {success}"
