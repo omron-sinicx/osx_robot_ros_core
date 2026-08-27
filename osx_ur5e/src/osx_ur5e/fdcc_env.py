@@ -15,6 +15,7 @@ from osx_ur5e.base_env import BaseEnv
 from osx_ur5e.timestep import TimeStep, STEP_MID, STEP_LAST
 from osx_ur5e.action_limits import limiter_from_safety_config
 from ur_control import transformations
+from ur_control.constants import CARTESIAN_COMPLIANCE_CONTROLLER
 
 
 STIFFNESS_REPRESENTATIONS = ['cholesky', 'diag']
@@ -83,6 +84,17 @@ class FDCCEnv(BaseEnv):
         self.arm.async_mode = True
         self.arm.zero_ft_sensor()
 
+    @property
+    def compliance_control_active(self):
+        """Whether the cartesian compliance controller is the one currently running.
+
+        ``set_cartesian_target_pose`` only publishes to that controller's
+        ``target_frame`` topic - it never switches controllers, and
+        ``auto_switch_controllers`` is off (see ``set_controller_parameters``).
+        So anything that servos in Cartesian space has to check this first.
+        """
+        return self.arm.running_controller_name == CARTESIAN_COMPLIANCE_CONTROLLER
+
     def deactivate_compliance_control(self):
         self.arm.zero_ft_sensor()
         self.arm.activate_joint_trajectory_controller()
@@ -112,7 +124,19 @@ class FDCCEnv(BaseEnv):
 
         Raises RuntimeError if the pose stops improving for ``stall_time`` seconds or if
         ``max_time`` runs out.
+
+        Falls back to a joint-space ``go_home()`` when compliance control is not
+        running: ``step()`` switches to the joint trajectory controller on a
+        force-violation stop, and Cartesian targets published after that go
+        nowhere - the pose error never shrinks and the stall check raises.
         """
+        if not self.compliance_control_active:
+            rospy.logwarn(
+                "Compliance control is not active (a force-violation stop switches to the "
+                "joint trajectory controller) - homing in joint space instead.")
+            self.go_home()
+            return
+
         rospy.loginfo("Moving to home Cartesian pose under compliance control...")
         home_cartesian_pose = self.arm.end_effector(joint_angles=self.initial_config)
         start_time = rospy.get_time()
