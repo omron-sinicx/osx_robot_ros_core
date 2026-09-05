@@ -42,6 +42,10 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from comet.common.datasets.utils import tensors_to_numpy
+from comet.common.datasets.dataset_info_utils import (
+    ensure_world_direction_frame,
+    load_characteristic_length,
+)
 import rospy
 
 from rich.console import Console
@@ -139,6 +143,47 @@ def _action_keys_for(cfg: DictConfig, action_type: str) -> list[str]:
     return list(cfg.dataset[action_type].keys())
 
 
+def _env_config_from(cfg: DictConfig, dataset: LeRobotDataset) -> DictConfig:
+    """Build the eval_config-shaped config FDCCEnv requires, from the dataset.
+
+    FDCCEnv's ``config`` is contractually a standalone ``eval_config.yaml``
+    shape (``comet.common.utils.env_config_compat``): flat top-level
+    ``control_fps``, ``cameras`` and ``env``. The raw hydra cfg carries none of
+    them, so this assembles that overlay the way
+    ``BaselinePolicyAdapter.env_config`` does — ``controller`` keeps coming
+    from the live cfg (so this run's ``init_qpos``/``stiffness`` overrides
+    still apply), the three contract fields are overlaid.
+
+    There is no policy and no checkpoint here — episodes come straight off
+    disk — so the contract fields are resolved from the replayed dataset
+    itself. ``characteristic_length`` comes from its ``info.json``, which is
+    the authoritative copy: a checkpoint's ``eval_config.yaml`` only ever
+    mirrors what the postprocessing scripts wrote there. ``control_fps`` is
+    its recording rate, so the env ticks at the rate the replayed actions were
+    actually recorded at; override with ``+eval.control_fps=<hz>``.
+    """
+    info = dataset.meta.info
+    ensure_world_direction_frame(info)
+
+    override_fps = OmegaConf.select(cfg, "eval.control_fps", default=None)
+    control_fps = int(override_fps) if override_fps is not None else int(info["fps"])
+
+    overlay = {
+        "control_fps": control_fps,
+        "cameras": OmegaConf.to_container(cfg.dataset.cameras, resolve=True),
+        "env": {"characteristic_length": load_characteristic_length(info)},
+    }
+    logger.info(
+        f"Env config from dataset {dataset.repo_id} | control_fps={control_fps}"
+        f"{'' if override_fps is None else ' (overridden)'} "
+        f"cameras={list(overlay['cameras'])} env={overlay['env']}"
+    )
+    # Hydra enables struct mode on the live cfg; merge into a resolved copy so
+    # overlay keys absent from the hydra schema still apply.
+    base = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    return OmegaConf.merge(base, overlay)
+
+
 def move_to_init_qpos(env: FDCCEnv, reason: str = "") -> None:
     """Move the robot to the safe init_qpos configuration via env.go_home()."""
     tag = f" ({reason})" if reason else ""
@@ -222,6 +267,13 @@ def replay_single_episode(
                 rospy.sleep(remaining)
             pbar.update(1)
 
+    # Same order the eval runner uses after every rollout (comet/eval/runner.py):
+    # servo home under compliance first, then drop compliance. Deactivating
+    # while the tool is still loaded hands a contact pose to the joint
+    # trajectory controller, which is the stiff move we want to avoid.
+    # move_to_home() falls back to joint-space go_home() by itself when a force
+    # violation already switched controllers.
+    env.move_to_home(timeout=5.0)
     env.deactivate_compliance_control()
 
     return ReplayResult(
@@ -724,7 +776,7 @@ def main(cfg: DictConfig) -> None:
     rospy.init_node("test_replay_episode_pro", anonymous=False)
     logger.info("ROS node initialized")
 
-    env = FDCCEnv(config=cfg)
+    env = FDCCEnv(config=_env_config_from(cfg, dataset))
     env.reference_trajectory = []
 
     logger.info(f"actions_as_deltas: {env.actions_as_deltas}")
@@ -815,7 +867,8 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # Return to safe position
     # ------------------------------------------------------------------
-    # move_to_init_qpos(env, reason="all episodes finished")
+    move_to_init_qpos(env, reason="all episodes finished")
+    logger.info("Returned to home position after replay.")
 
     # ------------------------------------------------------------------
     # Overall summary
