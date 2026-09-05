@@ -51,7 +51,7 @@ import rospy
 from rich.console import Console
 from rich.logging import RichHandler
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
 from osx_ur5e.fdcc_env import FDCCEnv
 from ur_control import transformations
@@ -73,6 +73,26 @@ class ReplayResult:
     torque_norm: np.ndarray
     stiffness: np.ndarray | None = None
     force_violation: bool = False
+    # Dataset row (relative to the episode start) each recorded step commanded.
+    # Identity for stride 1; with a waypoint stride the replay has
+    # ep_len/stride samples, so every comparison against the dataset must index
+    # through this rather than assume replay step i lines up with dataset step i.
+    ds_indices: np.ndarray | None = None
+    stride: int = 1
+    duration_s: float = 0.0
+    clip_count: int = 0
+
+    @property
+    def label(self) -> str:
+        return self.action_type if self.stride == 1 else f"{self.action_type}x{self.stride}"
+
+    @property
+    def ds_steps(self) -> np.ndarray:
+        """Dataset timestep of each recorded step — the x-axis that puts a
+        strided replay on the same time base as the dataset."""
+        if self.ds_indices is None:
+            return np.arange(len(self.force_norm))
+        return self.ds_indices - self.ds_indices[0] if len(self.ds_indices) else self.ds_indices
 
 
 # ---------------------------------------------------------------------------
@@ -208,33 +228,64 @@ def replay_single_episode(
     replay_action_keys: list[str],
     fps: float,
     include_stiffness: bool,
+    stride: int = 1,
+    row_offset: int = 0,
 ) -> ReplayResult:
-    """Replay one episode through the robot and return recorded data."""
+    """Replay one episode through the robot and return recorded data.
+
+    ``stride`` commands only every k-th recorded waypoint. Since
+    ``actions_as_deltas`` is false these actions are absolute pose targets, so
+    a stride leaves each target k steps further along the path and the episode
+    finishes in ep_len/k control ticks.
+
+    ``row_offset`` maps absolute dataset rows (what ``meta.episodes`` reports)
+    to positions in the loaded subset: ``LeRobotDataset(episodes=[...])``
+    filters rows, so ``dataset[abs_row]`` silently returns the wrong frame for
+    any episode after the first. Pass the first loaded episode's
+    ``dataset_from_index``.
+    """
     ep = dataset.meta.episodes[episode_idx]
     ep_start = int(ep["dataset_from_index"])
     ep_end = int(ep["dataset_to_index"])
     ep_len = ep_end - ep_start
     sleep_time = 1.0 / fps
 
-    eef_pos = np.zeros((ep_len, 3))
-    force_norm = np.zeros(ep_len)
-    torque_norm = np.zeros(ep_len)
-    stiffness = np.zeros(ep_len) if include_stiffness else None
+    # Always command the final waypoint: a stride that does not divide ep_len
+    # would otherwise stop short and leave the motion unfinished.
+    frames = list(range(ep_start, ep_end, stride))
+    if frames[-1] != ep_end - 1:
+        frames.append(ep_end - 1)
+    n_steps = len(frames)
+
+    eef_pos = np.zeros((n_steps, 3))
+    force_norm = np.zeros(n_steps)
+    torque_norm = np.zeros(n_steps)
+    stiffness = np.zeros(n_steps) if include_stiffness else None
 
     env.reset(move_robot=False)
+    # The eval runner's reset(move_robot=True) pushes p/d gains, error_scale,
+    # mode and the selection matrix and flips auto_switch_controllers/async_mode
+    # before every rollout (fdcc_env.reset -> set_controller_parameters).
+    # reset(move_robot=False) skips all of it, so without this a replay runs on
+    # the controller node's own YAML fallback gains, not controller.* from the
+    # hydra cfg.
+    env.set_controller_parameters()
 
-    frame = dataset[ep_start]
+    frame = dataset[ep_start - row_offset]
     logger.info("Moving to episode start qpos...")
     env.arm.set_joint_positions(target_time=1.0, positions=frame["observation.qpos"], wait=True)
 
-    input(f"\n  [{action_type}] Episode {episode_idx} ({ep_len} steps) — press Enter to start...")
+    tag = action_type if stride == 1 else f"{action_type} stride={stride}"
+    input(f"\n  [{tag}] Episode {episode_idx} ({n_steps} steps of {ep_len}) — press Enter to start...")
     env.activate_compliance_control()
 
     force_violation = False
-    with tqdm.tqdm(total=ep_len, desc=f"Ep {episode_idx} ({action_type})") as pbar:
-        for i, t in enumerate(range(ep_start, ep_end)):
+    clip_count = 0
+    replay_start = timeit.default_timer()
+    with tqdm.tqdm(total=n_steps, desc=f"Ep {episode_idx} ({tag})") as pbar:
+        for i, t in enumerate(frames):
             step_start = timeit.default_timer()
-            frame = dataset[t]
+            frame = dataset[t - row_offset]
 
             actual_eef = env.arm.end_effector()
             eef_pos[i] = actual_eef[:3]
@@ -249,6 +300,14 @@ def replay_single_episode(
             if include_stiffness:
                 stiffness[i] = env.last_compliance_stiffness
 
+            # Whether the safety limiter throttled this step. At 60 Hz the
+            # velocity/acceleration caps sit far above recorded frame deltas,
+            # so a nonzero count means the stride is asking for more motion
+            # per tick than the limiter allows and the speedup is bounded.
+            triggers = env.action_limiter.last_clip_triggers
+            if triggers["translation"] or triggers["orientation"]:
+                clip_count += 1
+
             if timestep.last():
                 logger.warning(f"Episode {episode_idx} ended early at step {i} (force limit exceeded)")
                 force_violation = True
@@ -257,6 +316,7 @@ def replay_single_episode(
                 torque_norm = torque_norm[:i + 1]
                 if include_stiffness:
                     stiffness = stiffness[:i + 1]
+                frames = frames[:i + 1]
                 break
 
             elapsed = timeit.default_timer() - step_start
@@ -267,6 +327,11 @@ def replay_single_episode(
                 rospy.sleep(remaining)
             pbar.update(1)
 
+    # Stop the clock BEFORE homing: move_to_home() adds a near-constant
+    # ~4.5 s that otherwise inflates every duration and wrecks the stride
+    # comparison.
+    duration_s = timeit.default_timer() - replay_start
+
     # Same order the eval runner uses after every rollout (comet/eval/runner.py):
     # servo home under compliance first, then drop compliance. Deactivating
     # while the tool is still loaded hands a contact pose to the joint
@@ -276,6 +341,12 @@ def replay_single_episode(
     env.move_to_home(timeout=5.0)
     env.deactivate_compliance_control()
 
+    logger.info(
+        f"  [{tag}] {len(frames)} steps in {duration_s:.1f}s "
+        f"(dataset episode spans {ep_len / fps:.1f}s at {fps:g} Hz "
+        f"-> {ep_len / fps / max(duration_s, 1e-9):.2f}x) | limiter clipped {clip_count} steps"
+    )
+
     return ReplayResult(
         action_type=action_type,
         eef_pos=eef_pos,
@@ -283,6 +354,10 @@ def replay_single_episode(
         torque_norm=torque_norm,
         stiffness=stiffness,
         force_violation=force_violation,
+        ds_indices=np.asarray(frames) - ep_start,
+        stride=stride,
+        duration_s=duration_s,
+        clip_count=clip_count,
     )
 
 
@@ -296,6 +371,7 @@ def extract_dataset_ground_truth(
     include_stiffness: bool,
     stiffness_key: str | None,
     ft_in_tool_frame: bool = True,
+    row_offset: int = 0,
 ) -> dict:
     """Pull EEF positions, force norms, stiffness and the quantities needed for
     the sensor-vs-implied-spring consistency check from the dataset for one episode."""
@@ -317,7 +393,7 @@ def extract_dataset_ground_truth(
         return (x.cpu().numpy() if isinstance(x, torch.Tensor) else np.array(x)).flatten()
 
     for i, t in enumerate(range(ep_start, ep_end)):
-        frame = dataset[t]
+        frame = dataset[t - row_offset]
 
         if "observation.eef.position" in frame:
             eef_pos[i] = _np(frame["observation.eef.position"])
@@ -552,8 +628,8 @@ def plot_episode_comparison(
 
     for ridx, replay in enumerate(replays):
         style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
-        steps = np.arange(len(replay.force_norm))
-        tag = replay.action_type
+        steps = replay.ds_steps
+        tag = replay.label
         for i, (lbl, ca) in enumerate(zip(axis_labels, style["color_set"])):
             ax_pos.plot(steps, replay.eef_pos[:, i], color=ca, linewidth=0.8, alpha=style["alpha"],
                         label=f"{lbl} {tag}")
@@ -567,12 +643,11 @@ def plot_episode_comparison(
     ax_err = fig.add_subplot(gs[1, 0])
     for ridx, replay in enumerate(replays):
         style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
-        T = min(len(replay.eef_pos), len(ds_eef))
-        pos_error = replay.eef_pos[:T] - ds_eef[:T]
-        steps = np.arange(T)
+        steps = replay.ds_steps
+        pos_error = replay.eef_pos - ds_eef[replay.ds_indices]
         for i, (lbl, col) in enumerate(zip(axis_labels, style["color_set"])):
             ax_err.plot(steps, pos_error[:, i], color=col, linewidth=0.8, alpha=style["alpha"],
-                        label=f"{lbl} {replay.action_type}")
+                        label=f"{lbl} {replay.label}")
     ax_err.axhline(0, color="black", linewidth=0.5, linestyle=":")
     ax_err.set_title("Position error (replay − dataset)")
     ax_err.set_ylabel("Error (m)")
@@ -583,11 +658,9 @@ def plot_episode_comparison(
     ax_l2 = fig.add_subplot(gs[1, 1])
     l2_colors = ["tab:purple", "tab:brown"]
     for ridx, replay in enumerate(replays):
-        T = min(len(replay.eef_pos), len(ds_eef))
-        l2_err = np.linalg.norm(replay.eef_pos[:T] - ds_eef[:T], axis=1)
-        steps = np.arange(T)
-        ax_l2.plot(steps, l2_err, color=l2_colors[ridx % len(l2_colors)], linewidth=0.8,
-                   label=replay.action_type)
+        l2_err = np.linalg.norm(replay.eef_pos - ds_eef[replay.ds_indices], axis=1)
+        ax_l2.plot(replay.ds_steps, l2_err, color=l2_colors[ridx % len(l2_colors)], linewidth=0.8,
+                   label=replay.label)
     ax_l2.set_title("L2 position error")
     ax_l2.set_ylabel("||error|| (m)")
     ax_l2.legend(fontsize=7)
@@ -599,9 +672,8 @@ def plot_episode_comparison(
     ax_fn.plot(ds_steps, ds_force, color="tab:grey", linestyle="--", linewidth=0.8, label="dataset")
     for ridx, replay in enumerate(replays):
         style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
-        steps = np.arange(len(replay.force_norm))
-        ax_fn.plot(steps, replay.force_norm, color=fd_colors[ridx % len(fd_colors)], linewidth=0.8,
-                   alpha=style["alpha"], label=replay.action_type)
+        ax_fn.plot(replay.ds_steps, replay.force_norm, color=fd_colors[ridx % len(fd_colors)],
+                   linewidth=0.8, alpha=style["alpha"], label=replay.label)
     ax_fn.set_title("Force norm (N)")
     ax_fn.set_ylabel("||F|| (N)")
     ax_fn.set_ylim(bottom=0)
@@ -611,11 +683,9 @@ def plot_episode_comparison(
     # ── Row 2 right: Force difference (replay − dataset) ──
     ax_fd = fig.add_subplot(gs[2, 1])
     for ridx, replay in enumerate(replays):
-        T = min(len(replay.force_norm), len(ds_force))
-        force_diff = replay.force_norm[:T] - ds_force[:T]
-        steps = np.arange(T)
-        ax_fd.plot(steps, force_diff, color=fd_colors[ridx % len(fd_colors)], linewidth=0.8,
-                   label=replay.action_type)
+        force_diff = replay.force_norm - ds_force[replay.ds_indices]
+        ax_fd.plot(replay.ds_steps, force_diff, color=fd_colors[ridx % len(fd_colors)],
+                   linewidth=0.8, label=replay.label)
     ax_fd.axhline(0, color="black", linewidth=0.5, linestyle=":")
     ax_fd.set_title("Force difference (replay − dataset)")
     ax_fd.set_ylabel("ΔF (N)")
@@ -628,10 +698,9 @@ def plot_episode_comparison(
     td_colors = ["tab:blue", "tab:orange"]
     for ridx, replay in enumerate(replays):
         style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
-        steps = np.arange(len(replay.torque_norm))
         color = td_colors[ridx % len(td_colors)]
-        ax_tn.plot(steps, replay.torque_norm, color=color, linewidth=0.8,
-                   alpha=style["alpha"], label=replay.action_type)
+        ax_tn.plot(replay.ds_steps, replay.torque_norm, color=color, linewidth=0.8,
+                   alpha=style["alpha"], label=replay.label)
     ax_tn.set_title("Torque norm (Nm)")
     ax_tn.set_ylabel("||τ|| (Nm)")
     ax_tn.set_ylim(bottom=0)
@@ -641,11 +710,9 @@ def plot_episode_comparison(
     # ── Row 3 right: Torque difference (replay − dataset) ──
     ax_td = fig.add_subplot(gs[3, 1])
     for ridx, replay in enumerate(replays):
-        T = min(len(replay.torque_norm), len(ds_torque))
-        torque_diff = replay.torque_norm[:T] - ds_torque[:T]
-        steps = np.arange(T)
-        ax_td.plot(steps, torque_diff, color=td_colors[ridx % len(td_colors)], linewidth=0.8,
-                   label=replay.action_type)
+        torque_diff = replay.torque_norm - ds_torque[replay.ds_indices]
+        ax_td.plot(replay.ds_steps, torque_diff, color=td_colors[ridx % len(td_colors)],
+                   linewidth=0.8, label=replay.label)
     ax_td.axhline(0, color="black", linewidth=0.5, linestyle=":")
     ax_td.set_title("Torque difference (replay − dataset)")
     ax_td.set_ylabel("Δτ (Nm)")
@@ -660,9 +727,8 @@ def plot_episode_comparison(
         for ridx, replay in enumerate(replays):
             if replay.stiffness is not None:
                 style = _REPLAY_STYLES[ridx % len(_REPLAY_STYLES)]
-                steps = np.arange(len(replay.stiffness))
-                ax_st.plot(steps, replay.stiffness, color=style["stiff_color"], linewidth=0.8,
-                           alpha=style["alpha"], label=replay.action_type)
+                ax_st.plot(replay.ds_steps, replay.stiffness, color=style["stiff_color"],
+                           linewidth=0.8, alpha=style["alpha"], label=replay.label)
         ax_st.set_title("Stiffness")
         ax_st.set_ylabel("Stiffness")
         ax_st.set_xlabel("Timestep")
@@ -683,15 +749,16 @@ def plot_episode_comparison(
 
 def _log_replay_summary(episode_idx: int, replay: ReplayResult, ds_gt: dict) -> float:
     """Log per-replay metrics and return total force error."""
-    T = min(len(replay.force_norm), len(ds_gt["force_norm"]))
-    force_diff = replay.force_norm[:T] - ds_gt["force_norm"][:T]
+    if len(replay.force_norm) == 0:
+        logger.warning(f"  [{replay.label}] Episode {episode_idx} | no steps recorded")
+        return 0.0
+    force_diff = replay.force_norm - ds_gt["force_norm"][replay.ds_indices]
     episode_force_error = float(np.sum(np.abs(force_diff)))
 
-    T_pos = min(len(replay.eef_pos), len(ds_gt["eef_pos"]))
-    l2_pos_error = np.linalg.norm(replay.eef_pos[:T_pos] - ds_gt["eef_pos"][:T_pos], axis=1)
+    l2_pos_error = np.linalg.norm(replay.eef_pos - ds_gt["eef_pos"][replay.ds_indices], axis=1)
 
     logger.info(
-        f"  [{replay.action_type}] Episode {episode_idx} | "
+        f"  [{replay.label}] Episode {episode_idx} | "
         f"force violation: {replay.force_violation} | "
         f"mean L2 pos err: {np.mean(l2_pos_error):.4f} m | "
         f"mean force err: {np.mean(np.abs(force_diff)):.2f} N | "
@@ -732,7 +799,15 @@ def main(cfg: DictConfig) -> None:
 
     logger.info(f"Loading dataset: {repo_id} from {dataset_root}")
     start_episode = int(cfg.dataset.dataset.episode_idx)
-    dataset = LeRobotDataset(repo_id, root=dataset_root, video_backend="pyav", use_videos=False, episodes=[start_episode])
+    num_episodes = int(OmegaConf.select(cfg, "eval.num_episodes", default=1))
+    meta = LeRobotDatasetMetadata(repo_id, root=dataset_root)
+    end_episode = min(start_episode + num_episodes, meta.total_episodes)
+    dataset = LeRobotDataset(repo_id, root=dataset_root, video_backend="pyav", use_videos=False,
+                             episodes=list(range(start_episode, end_episode)))
+    # episodes=[...] filters rows, so dataset[] is positional over the loaded
+    # subset while meta.episodes reports absolute rows. Everything below keeps
+    # using absolute rows and subtracts this at the point of access.
+    row_offset = int(dataset.meta.episodes[start_episode]["dataset_from_index"])
 
     info_path = output_dir / "dataset_info.json"
     with open(info_path, "w") as f:
@@ -741,11 +816,7 @@ def main(cfg: DictConfig) -> None:
 
     fps = cfg.dataset.dataset.fps
 
-    num_episodes = int(OmegaConf.select(cfg, "eval.num_episodes", default=1))  # FIXME i dont know from where it imports this
-    total_episodes = dataset.meta.total_episodes
-    end_episode = min(start_episode + num_episodes, total_episodes)
-
-    logger.info(f"Dataset has {total_episodes} episodes | "
+    logger.info(f"Dataset has {meta.total_episodes} episodes | "
                 f"replaying episodes {start_episode} – {end_episode - 1}")
 
     primary_action_type = cfg.dataset.replay
@@ -806,43 +877,40 @@ def main(cfg: DictConfig) -> None:
             dataset, episode_idx, include_stiffness,
             stiffness_key="action.stiffness_diag",
             ft_in_tool_frame=ft_in_tool_frame,
+            row_offset=row_offset,
         )
 
         # -- Run primary replay --
         logger.info(f"Running primary replay: {primary_action_type}")
-        primary_result = replay_single_episode(
+        replays = [replay_single_episode(
             env, dataset, episode_idx,
             action_type=primary_action_type,
             replay_action_keys=primary_keys,
             fps=fps,
             include_stiffness=primary_has_stiffness,
-        )
-        replays = [primary_result]
-
-        # move_to_init_qpos(env, reason=f"after {primary_action_type} ep {episode_idx}")
+            row_offset=row_offset,
+        )]
 
         # -- Run comparison replay (if enabled) --
         if comparison:
             logger.info(f"Running comparison replay: {comparison_action_type}")
-            comparison_result = replay_single_episode(
+            replays.append(replay_single_episode(
                 env, dataset, episode_idx,
                 action_type=comparison_action_type,
                 replay_action_keys=comparison_keys,
                 fps=fps,
                 include_stiffness=comparison_has_stiffness,
-            )
-            replays.append(comparison_result)
-
-            # move_to_init_qpos(env, reason=f"after {comparison_action_type} ep {episode_idx}")
+                row_offset=row_offset,
+            ))
 
         # -- Summaries --
         for replay in replays:
             err = _log_replay_summary(episode_idx, replay, ds_gt)
-            total_force_errors[replay.action_type] = total_force_errors.get(replay.action_type, 0.0) + err
+            total_force_errors[replay.label] = total_force_errors.get(replay.label, 0.0) + err
 
         # -- Save numpy arrays --
         for replay in replays:
-            tag = replay.action_type
+            tag = replay.label
             np.save(output_dir / f"ep{episode_idx}_{tag}_eef_pos.npy", replay.eef_pos)
             np.save(output_dir / f"ep{episode_idx}_{tag}_force_norm.npy", replay.force_norm)
         np.save(output_dir / f"ep{episode_idx}_dataset_eef_pos.npy", ds_gt["eef_pos"])
