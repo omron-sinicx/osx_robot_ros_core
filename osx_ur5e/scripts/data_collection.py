@@ -174,7 +174,8 @@ def get_observations(arm: CompliantController, ur_current_state: dict, image_rec
 
 def set_action(arm: CompliantController, gello: Gello, ur_current_state: dict,
                safety_cfg: DictConfig, limiter: DeltaActionLimiter, dt: float) -> dict:
-    gello_joints = gello.joint_angles()
+    # UR convention: the two URDFs disagree on lift, elbow and wrist_3
+    gello_joints = gello.joint_angles_ur()
     current_pose = arm.end_effector(joint_angles=ur_current_state["joint_angles"])
     target_pose = arm.end_effector(joint_angles=gello_joints)
     stiffness_diag = arm.current_stiffness
