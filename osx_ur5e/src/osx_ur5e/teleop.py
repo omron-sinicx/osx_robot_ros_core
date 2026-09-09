@@ -110,7 +110,8 @@ class GelloTeleop:
     def step(self):
         """One teleop step: Gello joints -> clipped Cartesian target."""
         safety_cfg = self.safety_cfg
-        gello_joints = self.gello.joint_angles()
+        # UR convention: the two URDFs disagree on lift, elbow and wrist_3
+        gello_joints = self.gello.joint_angles_ur()
         current_pose = self.arm.end_effector()
         target_pose = self.arm.end_effector(joint_angles=gello_joints)
 
