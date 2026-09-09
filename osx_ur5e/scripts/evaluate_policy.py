@@ -29,7 +29,9 @@ Usage:
     # On-demand force via ROS topic (external mode):
     rostopic pub /comet/target_force std_msgs/Float32 "data: 25.0" -r 5
 
-Controls during each rollout:
+Controls during each rollout (read from this terminal; when the process has no
+terminal they fall back to a global X11 hook, which only sees keys delivered to
+$DISPLAY -- override with COMET_STOP_KEYS=stdin|x11|off):
     Enter  - confirm start of rollout (after reset prompt)
     q      - early-stop current rollout, record, and continue to the next
     r      - restart current rollout: discard the attempt (no artifacts, no
@@ -137,11 +139,13 @@ def main(cfg: DictConfig) -> None:
             ),
             setup_logging_fn=setup_logging,
             stop_events=stop_events,
+            key_listener=kb_listener,
             rollout_recorder=rollout_recorder,
             scene_snapshotter=scene_snapshotter,
         )
         runner.run()
     finally:
+        # Always restores the terminal mode the stdin backend took.
         kb_listener.stop()
         logger.info("Keyboard listener stopped.")
 
