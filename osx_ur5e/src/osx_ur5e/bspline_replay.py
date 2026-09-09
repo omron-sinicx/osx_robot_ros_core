@@ -120,7 +120,7 @@ def table_column(table: Any, key: str) -> np.ndarray:
 
 def episode_columns(source: str, config: BSplineFitConfig, available: Sequence[str] | None = None) -> list[str]:
     """Dataset columns the replay reads for ``source`` (fit inputs, ground truth, stored segments)."""
-    cols = list(required_columns(config.ref_source))
+    cols = list(required_columns(config.ref_source, config.force_source))
     for c in (OBS_EEF_POSITION, OBS_EEF_ROTATION, OBS_QPOS, OBS_FT, COL_CONTACT_FLAG, COL_ESTIMATED_STIFFNESS):
         if c not in cols:
             cols.append(c)
@@ -255,7 +255,9 @@ class StoredSegmentCurve(EpisodeCurve):
 
 def episode_labels(table: Any, config: BSplineFitConfig) -> tuple[np.ndarray, np.ndarray]:
     """The 18 FCT channels the curve is fitted to (gated, filtered) and the contact flag."""
-    return build_fct_channels(table, config.wrench_filter_window, ref_source=config.ref_source)
+    return build_fct_channels(
+        table, config.wrench_filter_window, ref_source=config.ref_source, force_source=config.force_source
+    )
 
 
 def build_episode_curve(table: Any, source: str, config: BSplineFitConfig) -> EpisodeCurve:
