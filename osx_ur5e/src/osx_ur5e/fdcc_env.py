@@ -147,6 +147,11 @@ class FDCCEnv(BaseEnv):
         force-violation stop, and Cartesian targets published after that go
         nowhere - the pose error never shrinks and the stall check raises.
         """
+        # A feedforward target wrench from the last policy step would otherwise keep
+        # pushing against the homing motion (the compliance target alone cannot
+        # overcome it) and trip the stall check a few centimetres from home.
+        self.clear_target_wrench()
+
         if not self.compliance_control_active:
             rospy.logwarn(
                 "Compliance control is not active (a force-violation stop switches to the "
