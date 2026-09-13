@@ -9,7 +9,7 @@ from comet.common.utils.env_config_compat import (
 )
 import rospy
 import numpy as np
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from osx_ur5e.base_env import BaseEnv
 from osx_ur5e.timestep import TimeStep, STEP_MID, STEP_LAST
@@ -24,6 +24,9 @@ HOME_POSITION_TOLERANCE = 0.01  # m
 HOME_ORIENTATION_TOLERANCE = 0.05  # rad, per axis
 HOME_STALL_TIME = 2.0  # s without the pose error shrinking before giving up
 HOME_MIN_PROGRESS = 0.01  # improvement in normalized error that counts as progress
+
+TARGET_WRENCH_FRAMES = ("ee", "base")
+TARGET_WRENCH_WARN_N = 30.0  # |F| of a feedforward target wrench worth warning about
 
 
 class FDCCEnv(BaseEnv):
@@ -62,6 +65,18 @@ class FDCCEnv(BaseEnv):
 
         self.actions_as_deltas = self.controller_config.actions_as_deltas
 
+        # Frame the FZI controller reads the target wrench in. Its
+        # `hand_frame_control` parameter defaults to true, i.e. end_effector_link
+        # coordinates and not the header frame_id, so "ee" is the default here too.
+        self.target_wrench_frame = str(
+            OmegaConf.select(config, "controller.target_wrench_frame", default="ee")).lower()
+        if self.target_wrench_frame not in TARGET_WRENCH_FRAMES:
+            raise ValueError(
+                f"controller.target_wrench_frame must be one of {TARGET_WRENCH_FRAMES}, "
+                f"got '{self.target_wrench_frame}'")
+        self.last_target_wrench = np.zeros(6)
+        self._logged_target_wrench = False
+
         self.load_characteristic_length(config)
 
     def load_characteristic_length(self, config):
@@ -96,6 +111,7 @@ class FDCCEnv(BaseEnv):
         return self.arm.running_controller_name == CARTESIAN_COMPLIANCE_CONTROLLER
 
     def deactivate_compliance_control(self):
+        self.clear_target_wrench()
         self.arm.zero_ft_sensor()
         self.arm.activate_joint_trajectory_controller()
 
@@ -106,6 +122,7 @@ class FDCCEnv(BaseEnv):
 
     def reset(self, move_robot=False):
         self.action_limiter.reset()
+        self.clear_target_wrench()
         if move_robot:
             self.set_controller_parameters()
             self.arm.activate_joint_trajectory_controller()
@@ -195,6 +212,7 @@ class FDCCEnv(BaseEnv):
                 observation=self.get_observation())
 
         controller_action = self.prepare_action(action)
+        self.apply_target_wrench(action)
         self.set_compliant_control_action(controller_action)
 
         self.rate.sleep()
@@ -204,6 +222,67 @@ class FDCCEnv(BaseEnv):
             reward=self.get_reward(),
             discount=None,
             observation=self.get_observation())
+
+    def apply_target_wrench(self, action):
+        """Publish the action's optional feedforward target wrench, if it carries one.
+
+        ``action['action.target_wrench']`` is a 6D wrench in the robot BASE frame
+        (comet's spline engine, docs/bspline_fct.md 8.7). It is a feedforward only:
+        the pose reference published by ``set_compliant_control_action`` keeps
+        steering, and the FCT / VT / raw paths are untouched when the key is absent
+        - except that a wrench sent earlier is then cleared once, so a stale push
+        never outlives the action that asked for it.
+        """
+        wrench = action.get("action.target_wrench") if isinstance(action, dict) else None
+        if wrench is None:
+            if np.any(self.last_target_wrench):
+                self.send_target_wrench(np.zeros(6))
+            return
+        self.send_target_wrench(wrench)
+
+    def send_target_wrench(self, wrench):
+        """Send a base-frame 6D target wrench to the compliance controller.
+
+        The controller sums sensor wrench, target wrench and gravity and moves
+        along the result, so the target wrench is the force the robot exerts on
+        the environment (at equilibrium target = -sensor). With
+        ``controller.target_wrench_frame: ee`` - the default, matching the
+        controller's own ``hand_frame_control: true`` - it is rotated into the
+        end-effector frame first (``w_ee = R^T w_base``, force and torque
+        separately); with ``base`` it is published as is.
+        """
+        if not hasattr(self.arm, "set_cartesian_target_wrench"):
+            rospy.logwarn_once(
+                "This ur_control build has no set_cartesian_target_wrench(): the feedforward "
+                "target wrench is ignored")
+            return
+        wrench = np.asarray(wrench, dtype=float).reshape(6)
+        force_magnitude = float(np.linalg.norm(wrench[:3]))
+        if force_magnitude > TARGET_WRENCH_WARN_N:
+            rospy.logwarn_throttle(
+                1.0, f"Feedforward target wrench |F|={force_magnitude:.1f}N exceeds "
+                     f"{TARGET_WRENCH_WARN_N}N: check eval.inference.spline.feedforward.max_n")
+
+        command = wrench
+        if self.target_wrench_frame == "ee" and np.any(wrench):
+            rotation = transformations.rotation_matrix_from_quaternion(
+                self.arm.end_effector()[3:])[:3, :3]
+            command = np.concatenate([rotation.T @ wrench[:3], rotation.T @ wrench[3:]])
+
+        self.arm.set_cartesian_target_wrench(list(command))
+        if not self._logged_target_wrench and force_magnitude > 0.0:
+            self._logged_target_wrench = True
+            rospy.loginfo(
+                f"Feedforward target wrench active: base {np.round(wrench, 2)} -> "
+                f"{self.target_wrench_frame} frame {np.round(command, 2)}")
+        self.last_target_wrench = wrench
+
+    def clear_target_wrench(self):
+        """Zero any feedforward target wrench (never fails a reset or a controller switch)."""
+        try:
+            self.send_target_wrench(np.zeros(6))
+        except Exception as e:
+            rospy.logwarn(f"Could not clear the feedforward target wrench: {e}")
 
     def prepare_action(self, action):
         """

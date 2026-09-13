@@ -190,7 +190,9 @@ def convert_policy_action(action_dict: dict, actions_as_deltas: bool) -> dict:
 
     The policy outputs action.rotation_axis_angle (3D, delta mode) or
     action.rotation_ortho6 (6D, absolute mode). This function renames the
-    appropriate key to 'action.orientation'.
+    appropriate key to 'action.orientation'. Every other key passes through
+    untouched, which is how the spline engine's optional feedforward
+    'action.target_wrench' (base-frame 6D) reaches FDCCEnv.apply_target_wrench().
 
     Args:
         action_dict: Dict of tensors from policy.select_action().
