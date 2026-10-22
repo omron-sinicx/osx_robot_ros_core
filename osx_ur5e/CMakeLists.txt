@@ -150,16 +150,6 @@ include_directories(include ${catkin_INCLUDE_DIRS})
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-catkin_install_python(PROGRAMS
-  scripts/gopro_wifi_stream.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
-install(PROGRAMS
-  scripts/reset_gopro_hdmi.sh
-  scripts/find_gopro_hdmi_device.sh
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
 install(DIRECTORY scripts/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/scripts
   USE_SOURCE_PERMISSIONS

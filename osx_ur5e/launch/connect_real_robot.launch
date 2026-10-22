@@ -4,7 +4,7 @@
   <param name="use_real_robot" type="bool" value="true" />
 
   <!-- Robot parameters that are separate for a_bot and b_bot -->
-  <arg name="robot_ip" default="10.0.2.3"/>
+  <arg name="robot_ip" default="192.168.2.42"/>
 
   <arg name="reverse_port" default="50001" />
   <arg name="script_sender_port" default="50002" />
@@ -58,36 +58,10 @@
   </include>
 
   <!-- Convert joint states to /tf tranforms -->
-  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>
+  <!-- <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/> -->
 
   <!-- Adapted from ur5e_bringup.launch -->
-  <param name="/dashboard/receive_timeout" type="double" value="3.0" />
-  <include file="$(find osx_scene_description)/launch/ur_common.launch">
-    <arg name="debug" value="$(arg debug)"/>
-    <arg name="use_tool_communication" value="$(arg use_tool_communication)"/>
-    <arg name="controller_config_file" value="$(arg controller_config_file)"/>
-    <arg name="robot_description_file" value="$(arg robot_description_file)"/>
-    <arg name="kinematics_config" value="$(arg kinematics_config)"/>
-    <arg name="robot_ip" value="$(arg robot_ip)"/>
-    <arg name="reverse_port" value="$(arg reverse_port)"/>
-    <arg name="script_sender_port" value="$(arg script_sender_port)"/>
-    <arg name="trajectory_port" value="$(arg trajectory_port)"/>
-    <arg name="script_command_port" value="$(arg script_command_port)"/>
-    <!-- <arg name="limited" value="$(arg limited)"/> -->
-    <arg name="tf_prefix" value="$(arg tf_prefix)"/>
-    <arg name="controllers" value="$(arg controllers)"/>
-    <arg name="stopped_controllers" value="$(arg stopped_controllers)"/>
-    <arg name="headless_mode" value="$(arg headless_mode)"/>
-    <arg name="tool_voltage" value="$(arg tool_voltage)"/>
-    <arg name="tool_parity" value="$(arg tool_parity)"/>
-    <arg name="tool_baud_rate" value="$(arg tool_baud_rate)"/>
-    <arg name="tool_stop_bits" value="$(arg tool_stop_bits)"/>
-    <arg name="tool_rx_idle_chars" value="$(arg tool_rx_idle_chars)"/>
-    <arg name="tool_tx_idle_chars" value="$(arg tool_tx_idle_chars)"/>
-    <arg name="tool_device_name" value="$(arg tool_device_name)"/>
-    <arg name="tool_tcp_port" value="$(arg tool_tcp_port)"/>
-    <arg name="robot_receive_timeout" value="$(arg robot_receive_timeout)" />
-  </include>
+  <include file="$(find ur_robot_driver)/launch/ur_common.launch" pass_all_args="true" />
 
 
 </launch>

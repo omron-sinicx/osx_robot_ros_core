@@ -2,7 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro"
        name="osx_base_scene" >
 
-  <xacro:include filename="$(find osx_scene_description)/urdf/ur_gazebo.xacro"/> 
+  <xacro:include filename="$(find osx_ur5e)/urdf/ur_gazebo.xacro"/> 
   <gazebo>
     <plugin name="ros_control" filename="libgazebo_ros_control.so">
     </plugin>
@@ -48,8 +48,8 @@
     </plugin>
   </gazebo>
 
-  <xacro:include filename="$(find osx_ur5e)/urdf/wipe_vertical_gripper.urdf.xacro" />
-  <xacro:wipe_vertical_gripper prefix="" parent="tool0" />
+  <!-- <xacro:include filename="$(find osx_ur5e)/urdf/wipe_vertical_gripper.urdf.xacro" />
+  <xacro:wipe_vertical_gripper prefix="" parent="tool0" /> -->
 
   <!-- The "world" link definition should be removed, but apparently it is necessary for Gazebo -->
   <link name="world" />
