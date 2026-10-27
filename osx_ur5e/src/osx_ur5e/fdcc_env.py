@@ -1,6 +1,7 @@
 from comet.common.utils.vt_utils import (
     process_factored_action_dict,
     compute_directional_stiffness_diagonal,
+    compute_explicit_wrench_from_factored,
 )
 from comet.common.utils.env_config_compat import (
     resolve_cam_names,
@@ -38,6 +39,24 @@ class FDCCEnv(BaseEnv):
         self.current_waypoint_index = 0
 
         self.last_compliance_stiffness = 0.0
+
+        # FVT mode: render force via the virtual-target offset (default) or
+        # command the ref pose plus an explicit target wrench
+        self.explicit_wrench = False
+        self.explicit_max_force = 60.0
+        self.explicit_max_torque = 5.0
+
+    def set_explicit_wrench(self, enabled, max_force=60.0, max_torque=5.0):
+        self.explicit_wrench = bool(enabled)
+        self.explicit_max_force = float(max_force)
+        self.explicit_max_torque = float(max_torque)
+        if self.explicit_wrench:
+            rospy.loginfo(f"Explicit wrench mode: commanding the ref pose + target wrench "
+                          f"(max_force={self.explicit_max_force} N, max_torque={self.explicit_max_torque} Nm)")
+
+    def clear_target_wrench(self):
+        self.target_wrench = np.zeros(6)
+        self.arm.set_cartesian_target_wrench(self.target_wrench)
 
     def load_params(self, config):
         super().load_params(config)
@@ -96,11 +115,13 @@ class FDCCEnv(BaseEnv):
         return self.arm.running_controller_name == CARTESIAN_COMPLIANCE_CONTROLLER
 
     def deactivate_compliance_control(self):
+        self.clear_target_wrench()
         self.arm.zero_ft_sensor()
         self.arm.activate_joint_trajectory_controller()
 
     def activate_compliance_control(self):
         self.action_limiter.reset()
+        self.clear_target_wrench()
         self.arm.zero_ft_sensor()
         self.arm.activate_cartesian_controller()
 
@@ -138,6 +159,8 @@ class FDCCEnv(BaseEnv):
             return
 
         rospy.loginfo("Moving to home Cartesian pose under compliance control...")
+        # an explicit-wrench rollout leaves its last target wrench latched
+        self.clear_target_wrench()
         home_cartesian_pose = self.arm.end_effector(joint_angles=self.initial_config)
         start_time = rospy.get_time()
         deadline = start_time + max(max_time, timeout)
@@ -211,13 +234,26 @@ class FDCCEnv(BaseEnv):
         """
         if "action.contact_direction" in action:  # FVT mode
             self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
-            controller_action = process_factored_action_dict(action,
+            pose_action = action
+            if self.explicit_wrench:
+                # zero force/torque -> the reconstruction returns the ref pose itself;
+                # the force/torque channels go to the controller as a target wrench
+                pose_action = {**action,
+                               "action.normal_force": np.zeros_like(action["action.normal_force"]),
+                               "action.normal_torque": np.zeros_like(action["action.normal_torque"])}
+            controller_action = process_factored_action_dict(pose_action,
                                                              default_stiffness=self.controller_config.stiffness,
                                                              default_stiffness_rot=self.controller_config.stiffness,
                                                              characteristic_length=self.characteristic_length,
                                                              use_isotropic_stiffness=False,
                                                              orientation_representation="quaternion",
                                                              full_stiffness_matrix=True)
+            if self.explicit_wrench:
+                controller_action["action.target_wrench"] = compute_explicit_wrench_from_factored(
+                    action,
+                    characteristic_length=self.characteristic_length,
+                    max_force=self.explicit_max_force,
+                    max_torque=self.explicit_max_torque)
         elif "action.virtual_target_position" in action:  # VT mode (vt_-scoped columns)
             self.last_compliance_stiffness = action["action.vt_estimated_stiffness"].item()
             vt_pos = action["action.virtual_target_position"]
@@ -282,6 +318,8 @@ class FDCCEnv(BaseEnv):
 
         target_pose = np.concatenate([target_position, target_orientation])
         self.arm.set_cartesian_target_pose(target_pose)
+        self.target_wrench = np.asarray(action.get('action.target_wrench', np.zeros(6)), dtype=float)
+        self.arm.set_cartesian_target_wrench(self.target_wrench)
 
         #  # slow traffic to gripper controller
         # if rospy.get_time() - self.last_gripper_command_stamp > 0.1 and \

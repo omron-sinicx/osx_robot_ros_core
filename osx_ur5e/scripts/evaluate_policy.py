@@ -26,6 +26,10 @@ Usage:
     # DMP force execution layer (dry run first):
     python evaluate_policy.py eval.force_layer.enabled=true eval.force_layer.dry_run=true
 
+    # FCT: command the ref pose + an explicit target wrench instead of the
+    # virtual target (combines with the force layer, which then sends F*):
+    python evaluate_policy.py eval.explicit_wrench.enabled=true
+
     # On-demand force via ROS topic (external mode):
     rostopic pub /comet/target_force std_msgs/Float32 "data: 25.0" -r 5
 
@@ -50,6 +54,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from comet.eval import RealRobotEvalRunner, build_policy_adapter
+from comet.eval.force_layer_hooks import assert_factored_actions_for_explicit_wrench
 from comet.eval.io import install_sigint_handler, start_stop_listener
 from osx_ur5e.fdcc_env import FDCCEnv
 from osx_ur5e.utils import (
@@ -88,6 +93,14 @@ def main(cfg: DictConfig) -> None:
         adapter.load(Path(cfg.eval.base.load_ckpt), policy_filename)
 
         env = FDCCEnv(config=adapter.env_config)
+
+        if OmegaConf.select(cfg, "eval.explicit_wrench.enabled", default=False):
+            assert_factored_actions_for_explicit_wrench(adapter.action_keys)
+            env.set_explicit_wrench(
+                True,
+                max_force=OmegaConf.select(cfg, "eval.explicit_wrench.max_force", default=60.0),
+                max_torque=OmegaConf.select(cfg, "eval.explicit_wrench.max_torque", default=5.0),
+            )
 
         rollout_recorder = None
         if OmegaConf.select(cfg, "eval.record_rosbag", default=False):
