@@ -1,8 +1,8 @@
-# license included since this code was adapted from cambel UR3 repo
+#!/usr/bin/env python3
 
 # The MIT License (MIT)
 #
-# Copyright (c) 2018-2021 Cristian Beltran
+# Copyright (c) 2026 OMRON SINIC X
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -24,542 +24,283 @@
 #
 # Author: Cristian Beltran
 
-import sys  # noqa
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent.parent / 'robosuite_meta/learning'))  # noqa
+"""Teleoperate the UR5e with a 3Dconnexion SpaceMouse under the FZI Cartesian compliance controller.
 
-from import_weights import import_weights
-from utils import get_logger
-from encoder_utils import encoder_prediction, load_policy
-from models import build_encoder_model
-import colorsys
-from matplotlib import pyplot as plt
-import multiprocessing as mp
-import rospy
-import sys
-import cv2
-import signal
+SpaceMouse Compact buttons:
+  LEFT held          run the policy (ignored when no policy is loaded)
+  RIGHT tap          zero the F/T sensor, re-anchor the target and clear a fault
+  LEFT + RIGHT held  move to the home pose
+
+Usage:
+  rosrun osx_ur5e spacemouse_control_fdcc.py                 # teleoperation
+  rosrun osx_ur5e spacemouse_control_fdcc.py --mouse-only    # print the mapped mouse input; no ROS/robot
+  rosrun osx_ur5e spacemouse_control_fdcc.py --config FILE
+"""
+
 import argparse
+import enum
 import time
-import random
-from datetime import datetime
+from pathlib import Path
 
-from collections import deque
 import numpy as np
-import pandas as pd
-from omegaconf import OmegaConf
-import torch
-np.set_printoptions(precision=6, linewidth=2000)
-torch.set_printoptions(precision=6, linewidth=2000)
-torch.set_float32_matmul_precision('medium')
+import rospy
+import yaml
+
+from osx_ur5e.action_limits import DeltaActionLimiter
+from osx_ur5e.policy import Policy, RobotState
+from osx_ur5e.spacemouse import RightTap, SpaceMouse
+from osx_ur5e.target_tracker import TargetTracker, limit_norm, rotation_error
+from ur_control.fzi_cartesian_compliance_controller import CompliantController
+
+DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config/control_fdcc.yaml"
 
 
-try:
-    from ur_control.exceptions import InverseKinematicsException
-    from ur_control.constants import GripperType
-    from ur_control import transformations
-    from ur_control.mouse_6d import Mouse6D
-    from ur_control.arm import Arm
-    from ur_control.fzi_cartesian_compliance_controller import CompliantController
-except Exception as e:
-    pass
+class Mode(enum.Enum):
+    TELEOP = "teleop"
+    POLICY = "policy"
+    HOMING = "homing"
+    FAULT = "fault"
 
 
-def signal_handler(sig, frame):
-    print('You pressed Ctrl+C!')
-    sys.exit(0)
+def configure_controller(arm, mode, stiffness, p_gains, d_gains, error_scale, iterations):
+    """Apply the `controller` config block to the compliance controller."""
+    arm.set_control_mode(mode)
+    arm.update_selection_matrix(np.ones(6))
+    arm.update_stiffness(np.asarray(stiffness, dtype=float))
+    arm.update_pd_gains(p_gains, d_gains)
+    arm.set_solver_parameters(error_scale=error_scale, iterations=iterations)
 
 
-signal.signal(signal.SIGINT, signal_handler)
-
-log = get_logger(__name__)
-np.set_printoptions(suppress=True)
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-log.info(f'Using device {device}')
-
-axes = "rxyz"
-
-MODELS_DIR = Path(__file__).resolve().parent.parent / 'models'
-POLICY_CKPT_DIR = MODELS_DIR / 'old/85_rigid_fdcc_basic_shapes'
-# POLICY_CKPT_DIR = MODELS_DIR / 'old/policy_rigid_fdcc_basic_shapes'
-# ENCODER_CKPT_DIR = MODELS_DIR / 'encoder_np_soft_basic_50hz'
-ENCODER_CKPT_DIR = MODELS_DIR / 'old/encoder_np_rigid_basic_shape_v2'
-# ENCODER_CKPT_DIR = MODELS_DIR / 'old/encoder_np_rigid_basic_shape/2025_12_05_13_22_27'
-
-# Helper functions
-
-
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+def make_tracker(limits, dt):
+    """Build the TargetTracker from the `limits` config block."""
+    linear_velocity = limits["max_linear_velocity"]
+    angular_velocity = np.deg2rad(limits["max_angular_velocity_deg"])
+    limiter = DeltaActionLimiter(
+        max_delta_translation=linear_velocity * dt,
+        max_delta_rotation=angular_velocity * dt,
+        max_linear_velocity=linear_velocity,
+        max_linear_acceleration=limits["max_linear_acceleration"],
+        max_angular_velocity=angular_velocity,
+        max_angular_acceleration=np.deg2rad(limits["max_angular_acceleration_deg"]))
+    workspace = limits["workspace"]
+    return TargetTracker(
+        limiter, dt,
+        workspace_min=[workspace[axis][0] for axis in "xyz"],
+        workspace_max=[workspace[axis][1] for axis in "xyz"],
+        max_tracking_error=limits["max_tracking_error"])
 
 
-def e2q(e):
-    return transformations.quaternion_from_euler(e[0], e[1], e[2], axes=axes)
+class SpaceMouseController:
+    """Each tick: read the mouse and robot, pick a mode from the buttons, command one limited step."""
 
+    def __init__(self, cfg, arm, mouse, policy: Policy | None = None, clock=rospy.get_time):
+        self.arm = arm
+        self.mouse = mouse
+        self.policy = policy
+        self.clock = clock
 
-def xya2df(X, Y, A):
-    X, Y, A = [np.array(v) for v in [X, Y, A]]
-    df = pd.DataFrame({
-        **{f'non_priv-{i}': X[:, i] for i in range(X.shape[1])},
-        **{f'priv-{i}': Y[:, i] for i in range(Y.shape[1])},
-        **{f'action-{i}': A[:, i] for i in range(A.shape[1])},
-    })
-    return df
+        self.rate_hz = cfg["control"]["rate_hz"]
+        self.dt = 1.0 / self.rate_hz
+        self.tracker = make_tracker(cfg["limits"], self.dt)
 
+        teleop = cfg["teleop"]
+        self.teleop_speed = np.array(3 * [teleop["max_linear_speed"]] +
+                                     3 * [np.deg2rad(teleop["max_angular_speed_deg"])])
+        if not teleop["enable_rotation"]:
+            self.teleop_speed[3:] = 0.0
 
-def load_models(cfg):
-    """Load policy and encoder models"""
-    policy = import_weights(Path(cfg.policy_path).parent.parent)
-    log.info(f'Loaded policy: {cfg.policy.model.name} from {cfg.policy_path}')
+        self.max_force = cfg["safety"]["max_force"]
+        self.max_torque = cfg["safety"]["max_torque"]
 
-    encoder = build_encoder_model(
-        cfg.encoder, cfg.encoder.non_priv_dim, cfg.encoder.priv_dim,
-        seq_len=cfg.encoder.input_horizon,
-    ).to(device)
-    encoder.load_state_dict(torch.load(
-        cfg.encoder_path, map_location=device, weights_only=True))
-    encoder = torch.compile(encoder)  # compile for faster inference
-    encoder.eval()
-    log.info(f"Loading encoder weights from {cfg.encoder_path}")
+        home = cfg["home"]
+        self.home_pose = np.asarray(arm.end_effector(joint_angles=home["joints"]), dtype=float)
+        self.home_linear_speed = home["max_linear_speed"]
+        self.home_angular_speed = np.deg2rad(home["max_angular_speed_deg"])
+        self.home_position_tolerance = home["position_tolerance"]
+        self.home_orientation_tolerance = np.deg2rad(home["orientation_tolerance_deg"])
+        if not self.tracker.in_workspace(self.home_pose[:3]):
+            rospy.logwarn(f"Home position {self.home_pose[:3].round(3)} is outside the workspace box")
 
-    return policy, encoder
+        self.policy_ticks = max(1, round(policy.period_s * self.rate_hz)) if policy else 1
+        self.right_tap = RightTap()
+        self.mode = Mode.TELEOP
+        self._reset_mode_state()
 
-
-class SpaceMouseFDCCController:
-    """FDCC controller with spacemouse teleoperation and policy inference"""
-
-    def __init__(self, args):
-        """Initialize controller with all config and hardware"""
-        self.args = args
-
-        # Load configs
-        self.control_cfg = OmegaConf.load(
-            Path(__file__).resolve().parent.parent / 'config/control.yaml'
-        )
-        self.policy_cfg = OmegaConf.load(str(ENCODER_CKPT_DIR / 'config.yaml'))
-
-        # Load and merge policy config from checkpoint dir
-        policy_ckpt_cfg = OmegaConf.load(str(POLICY_CKPT_DIR / 'config.yaml'))
-        self.policy_cfg = OmegaConf.merge(self.policy_cfg, policy_ckpt_cfg)
-
-        self.policy_cfg.policy_path = POLICY_CKPT_DIR / 'best_ckpt/best_model.zip'
-        # self.policy_cfg.policy_path = POLICY_CKPT_DIR / 'SAC.zip'
-        self.policy_cfg.encoder_path = ENCODER_CKPT_DIR / 'ckpt/best.pt'
-
-        # Set scaling constants
-        self._init_scaling_constants()
-
-        # Initialize hardware
-        self._init_robot_controllers()
-
-        # Load models
-        set_seed(self.policy_cfg.seed)
-        self.policy, self.encoder = load_models(self.policy_cfg)
-
-        # State
-        self.non_priv_queue = deque(maxlen=self.policy_cfg.encoder.input_horizon)
-        self.X = []
-        self.Y = []
-        self.A = []
-        self.step = 0
-        self.is_begin = True
-
-    def _control_spring_mass_damper(self):
-        """Switch to spring-mass-damper control mode"""
-        cfg = self.control_cfg.robot_config.fdcc
-        self.arm.set_control_mode("spring-mass-damper")
-        self.arm.update_stiffness(np.array(cfg.stiffness))
-        self.arm.update_pd_gains(cfg.pd_gains, cfg.d_gains)
-
-    def _control_parallel(self):
-        """Switch to parallel control mode"""
-        cfg = self.control_cfg.robot_config.osc_position
-        self.arm.set_control_mode("parallel")
-        self.arm.update_selection_matrix(np.ones(6))
-        self.arm.update_stiffness(np.array(cfg.stiffness))
-        self.arm.update_pd_gains(cfg.pd_gains, cfg.d_gains)
-
-    def _init_scaling_constants(self):
-        """Set scaling based on gripper type"""
-        gripper_type = self.policy_cfg.policy.env.gripper_type
-
-        # TODO: set these in the control.yaml config instead of hardcoding here.
-        if gripper_type == 'Robotiq85Gripper':
-            self.position_scale = 0.00035
-            self.rotation_scale = 0.001
-            self.stiffness_min = np.array([5, 5, 5, 5, 5, 5])
-            self.stiffness_max = np.array([1000, 1000, 1000, 200, 200, 200])
-            log.info(f'Using RIGID gripper scaling (position={self.position_scale}, rotation={self.rotation_scale})')
-        elif gripper_type == 'Robotiq85GripperSoft':
-            self.position_scale = 0.0022
-            self.rotation_scale = 0.005
-            self.stiffness_min = np.array([100, 100, 100, 20, 20, 20])
-            self.stiffness_max = np.array([500, 500, 500, 100, 100, 100])
-            log.info(f'Using SOFT gripper scaling (position={self.position_scale}, rotation={self.rotation_scale})')
-        else:
-            raise ValueError(f"Unknown gripper: {gripper_type}")
-
-    def _init_robot_controllers(self):
-        """Initialize arm and mouse"""
-        self.arm = CompliantController(gripper_type=None)
-
-        controller_type = self.policy_cfg.policy.env.control_space
-
-        if controller_type == 'FDCC':
-            self._control_spring_mass_damper()
-        else:
-            self._control_parallel()
-
-        if not self.arm.dashboard_services.activate_ros_control_on_ur():
-            raise RuntimeError("Failed to activate ROS control")
-
-        self.mouse6d = Mouse6D()
-        log.info('Initialized arm and mouse6D')
-
-    def _get_obs(self, rs_sub=None, x=None, q=None):
-        """Get observations and check collision"""
-        x = self.arm.end_effector() if x is None else x
-        q = self.arm.joint_angles() if q is None else q
-
-        wrist_pos = np.array(x[:3])
-        wrist_pos_rel = wrist_pos - self.control_cfg.task.hole_pos_base
-        scaled_wrist_pos_rel = wrist_pos_rel / self.policy_cfg.policy.env.obs_pose_scale
-
-        wrist_wrench = self.arm.get_wrench()
-        wrist_force = wrist_wrench[:3]
-        scaled_wrist_force = wrist_force / self.policy_cfg.policy.env.obs_force_scale
-        wrist_torque = wrist_wrench[3:]
-        scaled_wrist_torque = wrist_torque / self.policy_cfg.policy.env.obs_torque_scale
-
-        obs_non_priv = np.hstack((
-            scaled_wrist_pos_rel,
-            scaled_wrist_force,
-            scaled_wrist_torque,
-        ))
-
-        if rs_sub:
-            # vision data
-            rgb = np.array(rs_sub.get_rgb())
-            raw_rgb = rgb.copy()
-        else:
-            rgb = None
-            raw_rgb = None
-
-        ret = {
-            'non_priv': obs_non_priv,
-            'rgb': rgb,
-            'raw_rgb': raw_rgb,
-            'depth': None,
-        }
-
-        # Check collision
-        collision = (np.linalg.norm(wrist_force) > self.control_cfg.collision.force_threshold or
-                     np.linalg.norm(wrist_torque) > self.control_cfg.collision.torque_threshold)
-        if collision:
-            print("Force", np.linalg.norm(wrist_force), 'Torque', np.linalg.norm(wrist_torque))
-        return ret, collision
-
-    def _check_success(self, x):
-        """Check if task condition met"""
-        wrist_pos = np.array(x[:3])
-        pos_diff = wrist_pos - np.array(self.control_cfg.task.hole_pos_base)
-        return (np.abs(pos_diff[0]) < self.control_cfg.success.xy_tolerance and
-                np.abs(pos_diff[1]) < self.control_cfg.success.xy_tolerance and
-                np.abs(pos_diff[2]) < self.control_cfg.success.z_tolerance)
+    # ------------------------------------------------------------------
+    # Loop
+    # ------------------------------------------------------------------
 
     def run(self):
-        """Main control loop"""
-        # Get constants
-        SPEED_ACTION_SCALE = self.control_cfg.control.speed_action_scale
-        SPACEMOUSE_SENSITIVITY = self.control_cfg.control.spacemouse_sensitivity
-        CONTROL_FREQ = self.control_cfg.control.control_freq
-        HORIZON = self.control_cfg.control.horizon
-        controller_type = self.policy_cfg.policy.env.control_space
-
-        HOLE_POS_BASE = np.array(self.control_cfg.task.hole_pos_base)
-        HOME_POS = HOLE_POS_BASE + np.array(self.control_cfg.task.home_offset)
-
-        Q_HOME = tuple(self.control_cfg.task.q_home)
-        INITIAL_ORIENTATION = np.array(self.control_cfg.task.initial_orientation)
-        dt = 1.0 / CONTROL_FREQ
-        rate = rospy.Rate(CONTROL_FREQ)
-
-        log.info(f'Set seed to {self.policy_cfg.seed}')
-
-        if self.args.viz or self.args.use_seg:
-            self.policy_cfg.policy.env.use_rgb = True
-            self.policy_cfg.policy.env.use_depth = True
-
-        if CONTROL_FREQ != self.policy_cfg.policy.env.control_freq:
-            log.warning(
-                f"The control freq is different the config. Expect {self.policy_cfg.policy.env.control_freq}, got {CONTROL_FREQ}")
-
-        assert Path(self.policy_cfg.encoder_path).exists(), f"Encoder not found: {self.policy_cfg.encoder_path}"
-        assert Path(self.policy_cfg.policy_path).exists(), f"Policy not found: {self.policy_cfg.policy_path}"
-
-        # Initialize SAM2 process
-        self.args.use_seg = self.args.use_seg or self.policy_cfg.policy.env.seg_mode
-        if self.args.use_seg:
-            seg_sub = SegSubscriber()
-
-        rs_sub = None  # Placeholder for RealSense
-
-        # Rerun setup
-        if self.args.viz:
-            rr.init("traj")
-            rr.spawn(memory_limit='50%')
-            rr.log(
-                "raw_camera",
-                rr.Pinhole(
-                    resolution=[640, 480],
-                    image_from_camera=[[605.71160889,   0., 330.10424805],
-                                       [0., 605.06787109, 244.28578186],
-                                       [0.,   0.,   1.]],
-                    camera_xyz=rr.ViewCoordinates.RDF
-                )
-            )
-
+        """Activate the compliance controller and run until shutdown or a protective stop."""
+        rate = rospy.Rate(self.rate_hz)
+        self.arm.zero_ft_sensor()
+        state = self.read_state()
+        self.tracker.reanchor(state.pose)
+        if not self.tracker.in_workspace(state.pose[:3]):
+            rospy.logwarn(f"Start position {state.pose[:3].round(3)} is outside the workspace box; "
+                          "only motion back toward it is allowed")
+        self.arm.activate_cartesian_controller()
+        rospy.loginfo("Teleoperation active")
         try:
-            x_des = self.arm.end_effector().copy()
-            self.arm.zero_ft_sensor()
-
-            prev_time = time.time()
-            action = np.zeros(3)
-
-            self.arm.activate_cartesian_controller()
-
-            log.info("Start Moving Now!")
             while not rospy.is_shutdown():
                 if self.arm.dashboard_services.is_protective_stopped():
-                    rospy.logerr_throttle(1, "Protective stop triggered")
-                    rospy.logerr(f"last action {action.tolist()}")
-                    self.arm.joint_traj_controller.stop()
+                    rospy.logerr("Protective stop: exiting")
                     break
-
-                # Observation & Logic
-                x = self.arm.end_effector()
-                q = self.arm.joint_angles()
-                x_des = x.copy()
-
-                obs, collision = self._get_obs(rs_sub, x=x, q=q)
-
-                if collision:
-                    log.info(f'Number of step {self.step}')
-                    log.info(f'Collision!!')
-
-                    self.X = []
-                    self.Y = []
-                    self.A = []
-                    self.is_begin = True
-                    self.step = 0
-                    self.arm.set_cartesian_target_pose(self.arm.end_effector())
-                    input("continue?")
-
-                # Process SAM2
-                if self.args.use_seg:
-                    obs['depth'] = seg_sub.get_seg_depth()
-
-                # Tensorify
-                for k, v in obs.items():
-                    if v is not None:
-                        obs[k] = torch.from_numpy(v.astype(np.float32))
-                self.non_priv_queue.append(obs['non_priv'])
-
-                if self.is_begin:
-                    rospy.loginfo_throttle(1, 'Setup at beginning...')
-
-                    if self.args.pos_var:
-                        xy_var = np.random.uniform(-0.02, 0.02, size=2)
-                        pos_var = np.array([*xy_var, 0])
-                        target_pos = HOME_POS + pos_var
-                        rospy.loginfo_throttle(1, f'sample xy var: {xy_var}')
-                    else:
-                        target_pos = HOME_POS.copy()
-
-                    with torch.inference_mode():
-                        policy_obs, pred_priv = encoder_prediction(
-                            self.encoder, obs, self.non_priv_queue, device=device)
-                        policy_obs = policy_obs.cpu().numpy()
-                        self.policy.predict(policy_obs, deterministic=True)
-
-                    # wait for data to be available
-                    if (len(self.non_priv_queue) >= self.policy_cfg.encoder.input_horizon) \
-                            and (not self.args.use_seg or (self.args.use_seg and depth.any())):
-                        rospy.loginfo_throttle(1, 'Setup done')
-                        self.is_begin = False
-
-                # Control Logic
-                if self.mouse6d.joy_buttons[0] == 1 and self.mouse6d.joy_buttons[1] == 1:
-                    rospy.loginfo_throttle(1, 'Moving to gripper home')
-
-                    EEF_TO_WRIST_OFFSET = np.array(
-                        [0, 0, - GRIP_TO_WRIST - PEG_Z_SIZE - COMPENSATE_FOR_HOLE])
-                    x_pos = x[:3].copy()
-                    delta = (x_pos + EEF_TO_WRIST_OFFSET) - target_pos
-
-                    to_home_error = np.linalg.norm(delta)
-                    if to_home_error < 1e-4:
-                        log.info(f'Moved to home')
-                    else:
-                        if to_home_error > POLICY_ACTION_SCALE:
-                            delta = delta / to_home_error * POLICY_ACTION_SCALE
-                        x_des[:3] = x_pos - delta
-                        x_des[3:] = INITIAL_ORIENTATION
-                        self.arm.set_cartesian_target_pose(x_des)
-
-                elif self.mouse6d.joy_buttons[1] == 1:
-                    self.arm.zero_ft_sensor()
-                    rospy.loginfo_throttle(1, 'Zero the FT sensor')
-                    rospy.loginfo_throttle(1, f'Current q pose {q=}')
-                    self.X = []
-                    self.Y = []
-                    self.A = []
-                    self.is_begin = True
-                    self.step = 0
-                    rospy.loginfo_throttle(1, 'Reset states')
-                else:
-                    if self.mouse6d.joy_buttons[0] == 1:
-                        if self.is_begin:
-                            rospy.loginfo_throttle(1, 'Wait for begin')
-                        else:
-                            is_success = self._check_success(x)
-                            if is_success or self.step >= HORIZON:
-                                log.info(f'Step {self.step}, Success: {is_success}')
-
-                                self._control_parallel()
-
-                                if self.args.save:
-                                    df = xya2df(self.X, self.Y, self.A)
-                                    output_path = Path(
-                                        f'trajectories/{datetime.now().strftime("%m%d-%H%M%S")}.csv')
-                                    output_path.parent.mkdir(exist_ok=True)
-                                    df.to_csv(output_path, index=False)
-                                    log.info(f'Saved: {output_path}')
-
-                                self.X = []
-                                self.Y = []
-                                self.A = []
-                                self.is_begin = True
-                                self.step = 0
-                                self.arm.set_cartesian_target_pose(self.arm.end_effector())
-                                input("continue?")
-
-                            # Inference
-                            with torch.inference_mode():
-                                policy_obs, pred_priv = encoder_prediction(
-                                    self.encoder, obs, self.non_priv_queue, device=device)
-                                policy_obs = policy_obs.cpu().numpy()
-                                action, _ = self.policy.predict(policy_obs, deterministic=True)
-                            print("action", action)
-                            action = action[0]
-
-                            if controller_type == 'FDCC':
-                                # FDCC: 12D action = [pos(3), ori(3), stiffness(6)]
-                                delta_pos = action[0:3]
-                                delta_ori = action[3:6]  # axis-angle
-                                stiffness_raw = action[6:12]
-
-                                # Apply variable stiffness
-                                stiffness = self.stiffness_min + (stiffness_raw + 1.0) / 2.0 * (self.stiffness_max - self.stiffness_min)
-                                stiffness = np.clip(stiffness, self.stiffness_min, self.stiffness_max)
-                                self.arm.update_stiffness(stiffness)
-
-                                # Apply position delta
-                                x_des[:3] += delta_pos * self.position_scale * SPEED_ACTION_SCALE
-
-                                # Apply orientation delta
-                                scaled_delta_ori = delta_ori * self.rotation_scale * SPEED_ACTION_SCALE
-
-                                # Apply orientation delta
-                                if np.linalg.norm(scaled_delta_ori) > 1e-6:
-                                    angle = np.linalg.norm(scaled_delta_ori)
-                                    axis = scaled_delta_ori / angle
-                                    delta_quat = transformations.quaternion_about_axis(angle, axis)
-                                    x_des[3:] = transformations.quaternion_multiply(x_des[3:], delta_quat)
-                            else:
-                                x_des[:3] += action * self.position_scale * SPEED_ACTION_SCALE
-
-                            self.step += 1
-
-                            self.X.append(obs['non_priv'].cpu().numpy())
-                            self.Y.append(pred_priv.cpu().numpy()[0])
-                            self.A.append(action)
-
-                            # Viz code omitted for brevity unless enabled
-                            if self.args.viz:
-                                rr.log('wrist_pos', rr.Points3D(obs['non_priv'][:3]))
-                                if 'raw_rgb' in obs:
-                                    raw_rgb = obs['raw_rgb'].type(torch.uint8)
-                                    rr.log('raw_camera/raw_rgb',
-                                           rr.Image(raw_rgb).compress(jpeg_quality=80))
-                                if obs.get('depth') is not None:
-                                    d = obs['depth']
-                                    rr.log('obs/depth',
-                                           rr.DepthImage(d.cpu().numpy(), meter=1000.0))
-                    else:
-                        # Switch to parallel (stiff) mode for manual spacemouse control
-                        self._control_parallel()
-
-                        # Spacemouse
-                        spacenav = np.array(self.mouse6d.twist)
-                        spacenav_normalized = spacenav.copy() / 0.68359375
-                        spacenav_normalized[:2] *= -1.0
-                        spacenav_normalized[3:5] *= -1.0
-
-                        x_des[:3] += spacenav_normalized[:3] * SPACEMOUSE_SENSITIVITY
-                        x_des[3:] = transformations.rotate_quaternion_by_rpy(
-                            *(spacenav_normalized[3:] * np.deg2rad(1.0)), x_des[-4:])
-
-                x_des[3:] = INITIAL_ORIENTATION
-                try:
-                    self.arm.set_cartesian_target_pose(x_des)
-                except InverseKinematicsException:
-                    pass
-
+                start = time.monotonic()
+                self.tick()
+                if time.monotonic() - start > self.dt:
+                    rospy.logwarn_throttle(5, f"Control tick took longer than {self.dt * 1e3:.0f} ms")
                 rate.sleep()
-                now_time = time.time()
-                current_fps = np.round(1 / (now_time - prev_time), 4)
-                prev_time = now_time
-                if round(current_fps) < CONTROL_FREQ:
-                    rospy.logwarn_throttle(
-                        1, f'{current_fps=} is lower than expected {CONTROL_FREQ}')
-
+        except rospy.ROSInterruptException:
+            pass
         finally:
-            # Return to joint trajectory control for safe shutdown
-            try:
-                self.arm.activate_joint_trajectory_controller()
-            except AttributeError:
-                log.warning("Controller doesn't support joint trajectory activation")
-            # Clean up
-            cv2.destroyAllWindows()
-            if self.args.use_seg:
-                pass
+            self.arm.activate_joint_trajectory_controller()
+            if self.policy:
+                self.policy.close()
+
+    def tick(self):
+        reading = self.mouse.read()
+        state = self.read_state()
+        right_tap = self.right_tap.update(reading.left, reading.right)
+
+        if self.mode is Mode.FAULT:
+            if right_tap and reading.connected:
+                self.arm.zero_ft_sensor()
+                self.switch_mode(Mode.TELEOP, self.read_state())
+                rospy.loginfo("F/T sensor zeroed, fault cleared")
+            self.arm.set_cartesian_target_pose(self.tracker.pose)
+            return
+
+        fault = self.detect_fault(reading, state)
+        if fault:
+            rospy.logerr(f"{fault}; holding pose. Tap RIGHT to zero the F/T sensor and resume.")
+            self.switch_mode(Mode.FAULT, state)
+            self.arm.set_cartesian_target_pose(self.tracker.pose)
+            return
+
+        if right_tap:
+            self.arm.zero_ft_sensor()
+            self.tracker.reanchor(self.arm.end_effector())
+            rospy.loginfo("F/T sensor zeroed, target re-anchored")
+            return
+
+        mode = self.requested_mode(reading)
+        if mode is not self.mode:
+            self.switch_mode(mode, state)
+
+        if self.mode is Mode.TELEOP:
+            delta = reading.twist * self.teleop_speed * self.dt
+        elif self.mode is Mode.POLICY:
+            delta = self.policy_delta(state)
+        else:
+            delta = self.homing_delta(state)
+        self.arm.set_cartesian_target_pose(self.tracker.step(delta, state.pose))
+
+    # ------------------------------------------------------------------
+    # Modes
+    # ------------------------------------------------------------------
+
+    def requested_mode(self, reading):
+        if reading.left and reading.right:
+            return Mode.HOMING
+        if reading.left and self.policy is not None:
+            return Mode.POLICY
+        if reading.left and not self._warned_no_policy:
+            rospy.logwarn("LEFT pressed but no policy is loaded")
+            self._warned_no_policy = True
+        return Mode.TELEOP
+
+    def switch_mode(self, mode, state):
+        rospy.loginfo(f"Mode {self.mode.value} -> {mode.value}")
+        self.mode = mode
+        self.tracker.reanchor(state.pose)
+        self._reset_mode_state()
+        if mode is Mode.POLICY:
+            self.policy.reset(state)
+
+    def _reset_mode_state(self):
+        self._policy_step = np.zeros(6)
+        self._policy_ticks_left = 0
+        self._home_reached = False
+        self._warned_no_policy = False
+
+    def policy_delta(self, state):
+        if self._policy_ticks_left == 0:
+            self._policy_step = np.asarray(self.policy.act(state), dtype=float) / self.policy_ticks
+            self._policy_ticks_left = self.policy_ticks
+        self._policy_ticks_left -= 1
+        return self._policy_step
+
+    def homing_delta(self, state):
+        target = self.tracker.pose
+        position_error = self.home_pose[:3] - target[:3]
+        orientation_error = rotation_error(self.home_pose[3:], target[3:])
+        reached = (np.linalg.norm(self.home_pose[:3] - state.pose[:3]) < self.home_position_tolerance and
+                   np.linalg.norm(rotation_error(self.home_pose[3:], state.pose[3:])) <
+                   self.home_orientation_tolerance)
+        if reached and not self._home_reached:
+            rospy.loginfo("Home reached")
+        self._home_reached = reached
+        return np.concatenate([limit_norm(position_error, self.home_linear_speed * self.dt),
+                               limit_norm(orientation_error, self.home_angular_speed * self.dt)])
+
+    # ------------------------------------------------------------------
+    # Robot I/O
+    # ------------------------------------------------------------------
+
+    def read_state(self):
+        return RobotState(stamp=self.clock(),
+                          joints=np.asarray(self.arm.joint_angles(), dtype=float),
+                          pose=np.asarray(self.arm.end_effector(), dtype=float),
+                          wrench=np.asarray(self.arm.get_wrench(), dtype=float))
+
+    def detect_fault(self, reading, state):
+        if not reading.connected:
+            return "SpaceMouse disconnected"
+        force, torque = np.linalg.norm(state.wrench[:3]), np.linalg.norm(state.wrench[3:])
+        if force > self.max_force or torque > self.max_torque:
+            return f"F/T limit exceeded (|F|={force:.1f} N, |T|={torque:.2f} Nm)"
+        return None
+
+
+def run_mouse_only(mouse, period_s=0.1):
+    """Print the mapped base_link command until Ctrl-C."""
+    previous_count = mouse.report_count
+    try:
+        while True:
+            time.sleep(period_s)
+            reading = mouse.read()
+            count = mouse.report_count
+            twist = np.array2string(reading.twist, precision=2, suppress_small=True, sign=" ")
+            print(f"twist {twist}  left={int(reading.left)} right={int(reading.right)}  "
+                  f"reports/s={(count - previous_count) / period_s:4.0f}  "
+                  f"age={reading.report_age_s:5.2f}s  connected={reading.connected}")
+            previous_count = count
+    except KeyboardInterrupt:
+        pass
 
 
 def main():
-    """Main entry point"""
-    arg_fmt = argparse.RawDescriptionHelpFormatter
-    parser = argparse.ArgumentParser(formatter_class=arg_fmt)
-    parser.add_argument('-seg', '--use-seg', action='store_true')
-    parser.add_argument('-pv', '--pos-var', action='store_true')
-    parser.add_argument('-viz', '--viz', action='store_true')
-    parser.add_argument('-save', '--save', action='store_true')
-    parser.add_argument('--log_level', '-log', type=str, default='info')
-
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--mouse-only", action="store_true", help="print the mapped mouse input; no ROS/robot")
     args = parser.parse_args(rospy.myargv()[1:])
-    log.setLevel(args.log_level.upper())
+    cfg = yaml.safe_load(args.config.read_text())
 
-    rospy.init_node("joint_position_keyboard")
-    log.info('Initialized ROS node')
-
-    # Create and run controller
-    controller = SpaceMouseFDCCController(args)
-    controller.run()
+    mouse = SpaceMouse(**cfg["spacemouse"])
+    try:
+        if args.mouse_only:
+            run_mouse_only(mouse)
+            return
+        rospy.init_node("spacemouse_control_fdcc")
+        arm = CompliantController(gripper_type=None, **cfg["robot"])
+        if not arm.dashboard_services.activate_ros_control_on_ur():
+            raise RuntimeError("Failed to activate ROS control on the UR")
+        configure_controller(arm, **cfg["controller"])
+        SpaceMouseController(cfg, arm, mouse).run()
+    finally:
+        mouse.close()
 
 
 if __name__ == "__main__":
-    mp.set_start_method('spawn', force=True)
     main()

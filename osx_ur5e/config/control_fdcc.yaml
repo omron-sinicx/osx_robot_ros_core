@@ -1,0 +1,49 @@
+# scripts/spacemouse_control_fdcc.py: SpaceMouse teleoperation under the FZI Cartesian compliance controller.
+# Poses are tool0 in base_link (ur_control convention). Lengths in metres, angles in degrees.
+
+control:
+  rate_hz: 100                          # control loop rate
+
+robot:
+  base_link: base_link
+  ee_link: tool0
+
+controller:                             # cartesian_compliance_controller settings, applied once at start
+  mode: spring-mass-damper              # or "parallel"
+  stiffness: [1000, 1000, 1000, 100, 100, 300]   # N/m, Nm/rad
+  p_gains: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0]
+  d_gains: [0, 0, 0, 0, 0, 0]
+  error_scale: 0.1
+  iterations: 1
+
+spacemouse:
+  operator_yaw_deg: 0.0                 # mouse frame rotation about base_link z; check with --mouse-only
+  deadzone: 0.05                        # fraction of full deflection ignored around rest
+  stale_timeout_s: 0.2                  # command zero motion if no HID report arrives for this long
+
+teleop:
+  max_linear_speed: 0.05                # m/s at full deflection
+  max_angular_speed_deg: 15.0           # deg/s at full deflection
+  enable_rotation: true
+
+limits:                                 # applied to every commanded step (teleop, policy, homing)
+  max_linear_velocity: 0.10             # m/s per axis
+  max_linear_acceleration: 0.5          # m/s^2 per axis
+  max_angular_velocity_deg: 30.0        # deg/s per axis
+  max_angular_acceleration_deg: 180.0   # deg/s^2 per axis
+  max_tracking_error: 0.02              # max distance between commanded and measured position
+  workspace:                            # box for the commanded tool0 position
+    x: [-0.25, 0.25]                    # home tool0 is about (-0.005, 0.460, 0.618): x/y are home +- 0.25
+    y: [0.21, 0.71]
+    z: [0.45, 1.0]
+
+safety:
+  max_force: 50.0                       # N; above this, hold the pose until a RIGHT tap
+  max_torque: 5.0                       # Nm
+
+home:
+  joints: [1.278505, -1.635253, 1.288246, -1.200341, -1.534033, -0.465459]   # configs/rri/local/robot-home.json
+  max_linear_speed: 0.03                # m/s
+  max_angular_speed_deg: 10.0           # deg/s
+  position_tolerance: 0.002
+  orientation_tolerance_deg: 1.0
