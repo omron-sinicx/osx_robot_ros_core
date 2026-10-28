@@ -6,12 +6,12 @@
 
   <arg name="camera_name"         value="front_camera"/>
   <arg name="camera_serial_no"    value="143322073893"/>
-  <arg name="camera_fps"          default="60"/>
+  <arg name="camera_fps"          default="30"/>
   <arg name="depth_fps"           default="$(arg camera_fps)"/>
   <arg name="camera_width"        default="640"/>
   <arg name="camera_height"       default="480"/>
   <arg name="initial_reset"       default="false"/>
-  <arg name="enable_depth"        default="true"/>
+  <arg name="enable_depth"        default="false"/>
 
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"            value="$(arg camera_name)"/>

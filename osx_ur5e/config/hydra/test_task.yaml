@@ -5,7 +5,7 @@ defaults:
 
 # ================== Dataset Configuration ==================
 dataset:
-  repo_id: [bottle_open_06241205] # name of the dataset
+  repo_id: [wiping_02_lerobot] # name of the dataset
   task: "Test task" # task description
   root: /root/osx-ur/
   dir: "${.root}/data"
@@ -18,20 +18,296 @@ dataset:
   episode_idx: 0
   seed: 2
 
+  # evaluate_policy_points.py only: start each rollout from the EE pose the
+  # demonstrations begin at, instead of the hand-picked home_position joint
+  # config below. When true the arm goes STRAIGHT there -- move_to_home is
+  # skipped entirely -- via the same clipped-delta cartesian control the
+  # rollout itself uses, so the path is a straight line in cartesian space
+  # bounded by controller.safety_parameters (max_delta_translation per step,
+  # workspace_range overall). Check that line is clear of the fixture; set
+  # false to go back to joint homing if it isn't. The object is grasped AFTER
+  # arriving, so insertion happens at the pose the episode begins from.
+  #   use_dataset_start_pose  false = joint homing only (previous behavior).
+  #   start_pose_repo_id      dataset to read the pose from -- this should be
+  #     the dataset the POLICY WAS TRAINED ON, which is not necessarily
+  #     repo_id above (that one is for recording/replay). Falls back to
+  #     task_name/repo_id when unset.
+  #   start_pose_episode_idx  which episode's first frame (falls back to
+  #     episode_idx). Start poses vary across episodes -- for peg_hole_lerobot
+  #     the spread is ~4 cm std in x/y -- used when start_pose_episode_idx_mode
+  #     is "fixed" (default): one fixed, repeatable start for every rollout.
+  #   start_pose_episode_idx_mode  "fixed" (default) always uses
+  #     start_pose_episode_idx above. "sequential" cycles through
+  #     start_pose_episode_idxs below, one per rollout, wrapping around if
+  #     num_rollouts exceeds the pool size.
+  #   start_pose_episode_idxs  pool for "sequential" mode: null (default) =
+  #     every episode in the start-pose dataset; or a list [2, 5, 9]; or a
+  #     range string "0-9,20,30-35" (same format as replay_pkl_all.py's
+  #     dataset.replay_episodes).
+  #   start_pose_random_offset_m  extra domain-randomization nudge on top of
+  #     the resolved start pose: fixed magnitude (metres), random direction
+  #     over the full 3D sphere (x, y, and z all vary), one per rollout.
+  #     Deterministic: seeded per-rollout from --seed (not the global RNG),
+  #     so the same --seed reproduces the same offset for a given rollout_id
+  #     -- see apply_random_start_pose_offset. Unlike eval_offset below, this
+  #     is a real perturbation the policy sees at t=0, not hidden from it.
+  #     Default 0.01 (1 cm); set to 0.0 to disable.
+  # dataset.eval_offset is applied to this pose too, the same way it is
+  # applied to the policy's own commanded actions.
+  use_dataset_start_pose: true
+  start_pose_repo_id:  bottle_open_0903_08_lerobot
+  start_pose_episode_idx: 0
+  start_pose_episode_idx_mode: fixed
+  # start_pose_episode_idxs: null
+  start_pose_random_offset_m: 0.01
+
   # home_position: [1.57, -1.57, 1.57, -1.57, -1.57, -1.57]
   # home_position: [1.6060155073748987, -1.3023339074901124, 1.6428978443145752, -1.7655912838377894, -1.6474512259112757, 2.2007844279845834]
   # home_position: [1.298525, -1.387537, 1.80205245, -2.01655342, -1.62316, 2.2007844279845834]
   # home_position: [1.298525, -1.387537, 1.80205245, -2.01655342, -1.62316, 2.93791273]
   # home_position: [1.2159709, -1.3304645, 1.7322393, -2.0085249, -1.6201891, 2.8553587]
+  # home_position: [1.1578514, -1.436755, 2.09020631, -2.46998996, -1.2821189, 0.99518674]
+  # home_position: [1.1681489, -1.3838716, 2.0734512, -2.48098553, -1.243198, 0.99675754]
+  # home_position: [1.1499974, -1.3603096, 2.04220976, -2.46073971, -1.2442452, 1.6793558]
+  home_position: [1.1515682, -1.385791, 2.0507619, -2.39878052, -1.2442452, 1.5892968]
+
 
   # home_position: [1.1307988, -1.3709561, 1.851375457, -1.9395844, -1.2662364, 2.93791273]
-  home_position: [1.2983504, -1.4299483, 1.7133897, -1.88582826, -1.62316, 2.93686553]
+  # home_position: [1.2983504, -1.4299483, 1.7133897, -1.88582826, -1.62316, 2.93686553]
   home_target_time_s: 4.0    # time for the follower to move to home (s)
   gripper_home: 1.0          # normalized gripper pos at episode start (0=open)
   home_randomization: 0.0    # rad; per-joint uniform jitter around home (0 = off)
   teleop_reset: true        # if true, use GELLO teleoperation to set start pose instead of auto-homing
 
   use_gripper: true
+
+  # evaluate_policy_points.py only: which gripper is bolted to the wrist.
+  #   claw    -- osx_claw's Dynamixel ClawController (default; previous behavior)
+  #   robotiq -- a Robotiq C-model (85/140/hand-e) through robotiq_control's
+  #              gripper_action_controller, i.e. the driver
+  #              connect_real_robot.launch already brings up. Needs the
+  #              robotiq-cri packages built in underlay_ws.
+  # Both are commanded through the same normalized [0,1] value (1=open,
+  # 0=closed), so gripper_home / start_gripper / gripper_slowdown_* / grasp_*
+  # below all apply unchanged whichever one is selected.
+  # NOTE: grasp_cmd_close_threshold / grasp_gap_threshold further down are tuned
+  # for the claw. The Robotiq has a different stroke and stalls differently on a
+  # held object, so re-tune them on hardware after switching -- watch the
+  # per-step "Gripper: HOLDING/empty" log lines.
+  gripper_type: claw          # claw | robotiq
+  robotiq_namespace: ""       # ROS namespace of gripper_action_controller ("" = root, as launched)
+  robotiq_timeout: 5.0        # s to wait for its action server + first gripper_status message
+  # Robotiq only (the claw is unaffected): how much of the physical stroke a
+  # normalized "open" (1.0) actually opens. 0.375 of the 140 mm jaw = 52.5 mm,
+  # matching the claw's open width, so a claw-trained policy's gripper channel
+  # commands the same physical gap it did in training -- and the grasp_*
+  # thresholds below keep their claw-tuned meaning, since a held object then
+  # takes up the same share of the (shortened) normalized range. Closed is still
+  # fully closed; only the open end is rescaled. 1.0 = use the whole jaw.
+  robotiq_open_fraction: 0.395
+
+  # evaluate_policy_points.py only: save each rollout's tracking_node
+  # visualization (the annotated two-camera panel published on
+  # ~visualization_image, same one the reset prompt points you at in
+  # rqt_image_view) as an mp4 under output_dir/videos/rollout<NN>.mp4. fps is
+  # derived from actual frames-received / elapsed-time, not fixed. Default
+  # true; set false to skip it.
+  record_rollout_video: true
+
+  # evaluate_policy_points.py only: save a per-step commanded-vs-actual
+  # cartesian pose plot per rollout under output_dir/pose_error/rollout<NN>.png.
+  # "commanded" is the pose actually sent to the controller after
+  # execute_cartesian_target's per-step delta/workspace clip (not the
+  # policy's raw predicted pose); "actual" is the measured EE pose read right
+  # after issuing that command. See save_pose_error_visualization. Default
+  # true; set false to skip it.
+  record_pose_error_plot: true
+
+  # evaluate_policy_points.py only: record the UR5e's force/torque sensor for
+  # the duration of each rollout, saved next to that rollout's video as
+  # output_dir/ft/rollout<NN>.npz and .png.
+  #   record_ft_data  the npz: stamp, t_rel, wrench (N,6) = [Fx,Fy,Fz,Tx,Ty,Tz]
+  #     in the sensor frame exactly as published, plus step_marks (M,2) mapping
+  #     each control step to the sample index where it began -- so the trace
+  #     lines up with the video and the pose-error plot.
+  #   record_ft_plot  a 2x2 PNG: force and torque components over time, plus
+  #     their magnitudes with the peak marked.
+  #   ft_topic  which topic to record. /wrench is the raw sensor off the UR
+  #     driver (~500 Hz); ft_filter.py also republishes a zeroed/filtered
+  #     version on /wrench/filtered, which is what the compliance controller
+  #     consumes. Recorded at the topic's own rate, NOT once per control step.
+  record_ft_data: true
+  record_ft_plot: true
+  ft_topic: /wrench
+
+  # evaluate_policy_points.py only: record the flexible (BendLabs) sensors for
+  # the duration of each rollout, saved next to that rollout's video and FT
+  # trace as output_dir/bend/rollout<NN>.npz and .png.
+  #   record_bend_data  the npz: stamp (ROS time, the same clock the FT trace
+  #     uses, so the two overlay exactly), t_rel, step, angles (T, 2N) =
+  #     [twist, bend] per sensor in degrees, the baseline reading the rollout
+  #     opened with, sensor labels, and the rewind threshold in force.
+  #   record_bend_plot  a 2x2 PNG: raw twist/bend angles per sensor, and their
+  #     absolute deviation from the rollout's opening reading (what the
+  #     bend-sensor rewind thresholds) with that threshold drawn in.
+  # Sampled once per control step from the same BendLabsRecorder the rewind
+  # reaction uses -- the sensors publish asynchronously on one topic each, so a
+  # per-step snapshot is what makes them a single aligned matrix. Needs
+  # uart_bridge_node.py running; recording alone brings the recorder up even
+  # with bendlab_rewind_enabled false.
+  record_bend_data: true
+  record_bend_plot: true
+
+  # evaluate_policy_points.py only: SAFETY STOP. Abandon a rollout when the FT
+  # sensor's force magnitude |F| = sqrt(Fx^2+Fy^2+Fz^2) on ft_topic exceeds this
+  # many newtons -- exactly what pressing 'f' (fail) does: freeze the arm, open
+  # the gripper, retract reset_lift_distance_m straight up, ease back to the
+  # start pose, then continue with the next rollout. That rollout is excluded
+  # from the step statistics but still counts against --num_rollouts, and its
+  # files are labelled rollout<NN>_ft_limit.*. null/0 = no limit (not recommended).
+  #   The sensor is re-zeroed at the start pose before every rollout
+  #   (arm.zero_ft_sensor), so this is effectively force ABOVE that pose.
+  #   Caveat: zeroing is a static offset, so a rollout that substantially
+  #   reorients the wrist re-introduces some tool weight as apparent force --
+  #   with a ~1 kg Robotiq that is up to ~10-20 N in a full flip. Check a
+  #   normal rollout's ft/rollout<NN>.png peak |F| before tightening this.
+  # ft_force_limit_consecutive: samples in a row over the limit before it trips
+  #   (~500 Hz, so 3 ~= 6 ms) -- rejects a single spiky sample on the raw topic
+  #   without meaningfully delaying a real contact.
+  ft_force_limit_n: 30.0
+  ft_force_limit_consecutive: 3
+
+  # evaluate_policy_points.py only: open the gripper before the reset motion
+  # (freeze -> OPEN -> retract -> ease back to start), for both an FT-limit trip
+  # and a manual 'f' (fail) abandon. Lets go of a jammed object instead of
+  # retracting while still clamped onto it and dragging the fixture along. When a reset
+  # releases like this, the next rollout re-runs the insert-by-hand ritual under
+  # start_gripper=closed instead of assuming the object is still held.
+  # false = hold the gripper wherever it is (previous behavior).
+  reset_open_gripper: true
+
+  # replay_pkl_episode.py: start the replay partway through the episode instead
+  # of at the first frame (0 = first frame).
+  start_step: 0
+  # Force the gripper OPEN or CLOSED at the start of a run ("auto" keeps the
+  # default behavior). "closed" pauses so you can insert an object by hand
+  # before closing.
+  #   replay_pkl_episode.py:      overrides the gripper used while easing
+  #     into the start pose, instead of the dataset's recorded value.
+  #   evaluate_policy_points.py:  overrides move_to_home's gripper_home
+  #     value at the start of each rollout.
+  start_gripper: auto  # auto | open | closed
+
+  # evaluate_policy_points.py only, start_gripper=="closed" only: re-run the
+  # open / insert-the-object-by-hand / close prompt before EVERY rollout,
+  # instead of only the first one (and after a reset that released the
+  # object). Use it when the object has to be re-seated, swapped, or put back
+  # into the fixture by hand between attempts rather than staying in the jaws.
+  # The between-rollout retract of reset_lift_distance_m straight up happens
+  # either way, so the object is always lifted clear of the fixture before the
+  # jaws open; it is then released at that retracted pose and re-inserted at
+  # the start pose. false (default) = previous behavior: keep holding it from
+  # one rollout to the next.
+  reinsert_every_rollout: true
+
+  # ============== replay_pkl_all.py (all-episode sweep) ==============
+  # Replays every episode back-to-back, retracting reset_lift_distance_m
+  # straight up (world +Z, gripper untouched so a held object stays held)
+  # between episodes, then easing into the next episode's start pose -- the
+  # same reset evaluate_policy_points.py does between rollouts. The
+  # insert-the-object-by-hand step (start_gripper=closed) happens ONCE, before
+  # the first episode.
+  #   replay_episodes        null = every episode; a list [0,3,7]; or a range
+  #                          string "0-9" / "0-4,20,30-32".
+  #   exclude_episodes       episode ids to skip (e.g. a known-bad demo).
+  #   reset_lift_distance_m  straight-up retract between episodes (m). Same key
+  #                          and default evaluate_policy_points.py uses.
+  #   replay_pause_between   true waits for Enter between episodes; false
+  #                          (default) is the unattended non-stop sweep.
+  #   replay_loop            true repeats the whole list forever.
+  replay_episodes: null
+  exclude_episodes: null
+  reset_lift_distance_m: 0.07
+  replay_pause_between: false
+  replay_loop: false
+
+  # ====== replay_pkl_episode.py: compare a policy's chunk to the demo ======
+  # Replay drives the arm from the RECORDED actions, so the trajectory stays
+  # ground truth; the policy runs alongside without steering. That gives a
+  # teacher-forced read on real hardware -- prediction quality separated from
+  # closed-loop drift, which a normal rollout mixes together.
+  #   compare_policy_path  checkpoint dir (…/best/pretrained_model). null = off,
+  #                        and plain replay behaves exactly as before.
+  #   compare_every        capture a chunk every N steps (null = the policy's
+  #                        own n_action_steps, i.e. its real inference cadence).
+  #   compare_env_source   auto (default) = live keypoints from tracking_node if
+  #                        it is publishing, else the dataset's recorded ones;
+  #                        live = require the tracker (error out if absent);
+  #                        dataset = always use recorded keypoints.
+  # Outputs chunk_vs_demo_ep<NNN>.png (+ .npz): the top panels overlay every
+  # predicted chunk on the demo, the bottom panel plots error against lookahead
+  # depth -- error at step 0 is prediction bias, growth with depth is staleness.
+  compare_policy_path: null
+  compare_every: null
+  compare_env_source: auto
+
+  # Shift the physically-commanded pose by [x, y, z] metres along the *local*
+  # axes of the target pose (rotated by whatever orientation is commanded), not
+  # world axes -- so the correction means the same thing relative to the
+  # gripper regardless of which way the wrist is facing. Use this to correct a
+  # tool tip that sits off-centre from where the dataset's hand-derived
+  # geometry (gripper_points.py's Tshift/extrapoints) placed it, without
+  # re-deriving the dataset or retraining.
+  #
+  #   x  + = toward the gripper's local +X
+  #   y  + = toward the +Y finger (the finger-separation axis)
+  #   z  + = further out along tool0's approach/reach direction, - = further in
+  #
+  # [0, 0, 0] = disabled. Applied by:
+  #   evaluate_policy_points.py  added to every commanded target AND subtracted
+  #     back out of observation.state (rotated the same way), so the policy
+  #     always sees/plans in its original frame while the arm operates offset.
+  #     Also folded into use_dataset_start_pose (see above).
+  #   replay_pkl_episode.py      added to every commanded pose, start-pose
+  #     easing included. Nothing is subtracted back out -- no policy is
+  #     observing, so recorded actions are simply commanded offset away.
+  #   visualize_action_chunk.py  same as the eval script.
+  #
+  # See osx_ur5e/src/osx_ur5e/pose_offset.py. The older scalar `eval_z_offset`
+  # still works (treated as [0, 0, z]) but `eval_offset` wins if both are set.
+  # eval_offset: [0., -0.003, 0.020]    # claw
+  eval_offset: [0., 0.0, 0.01]    # claw
+  # eval_offset: [0., -0.00, -0.09]    # robotiq
+  # eval_offset: [0., -0.00, -0.10]    # robotiq
+
+  # Yaw companion to eval_offset above: rotates the commanded pose by this
+  # many degrees about its own local z-axis (the gripper's approach/reach
+  # axis), applied/undone the same way and at the same points as eval_offset
+  # (see pose_offset.apply_offset/undo_offset -- undoing composes correctly
+  # with a nonzero eval_offset too, it's an exact inverse either way).
+  # evaluate_policy_points.py only for now (replay_pkl_episode.py still only
+  # reads eval_offset, not this key). 0 = disabled.
+  eval_yaw_offset_deg: 0.0
+
+  # evaluate_policy_points.py only: optional continuous (linear-ramp)
+  # stiffness during rollouts, driven by the live MLP-estimated wrist
+  # deflection -- see PoseStiffnessModulator in that script for the full
+  # mechanics. Off by default; runs every control step (independent of
+  # object tracking, unlike the policy's own actions).
+  enable_pose_stiffness: false
+  pose_stiffness_pose_topic: /estimated_pose
+  pose_stiffness_trans_near: 0.003    # m
+  pose_stiffness_trans_far: 0.015      # m
+  pose_stiffness_rot_near: 0.05
+         # rad
+  pose_stiffness_rot_far: 0.5         # rad
+  pose_stiffness_trans_min: 300.0     # N/m
+  pose_stiffness_trans_max: 1000.0    # N/m
+  pose_stiffness_rot_min: 300.0        # Nm/rad
+  pose_stiffness_rot_max: 600.0       # Nm/rad
+  pose_stiffness_min_change: 5.0      # N/m or Nm/rad; skip a stiffness update below this
+  pose_stiffness_pose_timeout: 0.5    # s; fail-safe forces max stiffness past this
+
   # Shared by replay_pkl.py and evaluate_policy_points.py: on every gripper
   # open<->close transition, slow the replay/rollout (not freeze it) for
   # gripper_slowdown_duration_s seconds by multiplying the per-step sleep by
@@ -41,22 +317,42 @@ dataset:
   # evaluate_policy_points.py detects one from a large step-to-step change in
   # the policy's continuous predicted gripper command (see
   # gripper_slowdown_change_threshold below).
-  gripper_slowdown_enabled: true
+  gripper_slowdown_enabled: false
   gripper_slowdown_factor: 20.0
   gripper_slowdown_duration_s: 0.5
   gripper_slowdown_change_threshold: 0.4    # normalized [0,1]; |delta gripper_norm| above this counts as a transition (evaluate_policy_points.py only)
 
-  # evaluate_policy_points.py only: slow the rollout while any BendLabs
-  # bend/twist sensor deviates from its start-of-episode baseline by more
-  # than bendlab_slowdown_threshold -- a direct physical-contact signal,
-  # independent of (and combined via max() with) the gripper_slowdown_*
-  # trigger above. Level-based, not a timed window: reverts to normal speed
-  # as soon as the deviation drops back under threshold. Sole gate for
-  # whether BendLabsRecorder gets initialized in this script (separate from
-  # use_bendlabs below, which only controls dataset logging elsewhere).
-  bendlab_slowdown_enabled: true
-  bendlab_slowdown_threshold: 205.0   # degrees; max |current - baseline| across all sensors/axes -- untested default, tune on hardware
-  bendlab_slowdown_factor: 50.0
+  # evaluate_policy_points.py only: feed the policy a *binary* gripper element
+  # in observation.state (open = holding nothing, closed = holding something)
+  # derived from the gap between the claw's commanded and measured position,
+  # instead of the raw measured position. A persistent gap (jaws commanded shut
+  # but physically held open by an object) means the gripper is holding
+  # something -> encode as closed (+1); otherwise open (-1). Matches the binary
+  # gripper channel the policy was trained on (convert_pkl_to_lerobot.py writes
+  # demo gripper_states as -1/+1) better than the continuous measured position.
+  # Requires the claw's measured-position feedback (motor10_position) to be
+  # live -- otherwise commanded == measured, the gap is always 0, and the signal
+  # is stuck at "open".
+  grasp_binary_enabled: true
+  grasp_cmd_close_threshold: 0.8    # normalized [0,1], 0=closed; commanded pos at/below this counts as "commanded shut"
+  grasp_gap_threshold: 0.2         # normalized [0,1]; measured must be this much more OPEN than commanded to count as "held open by an object" -- tune on hardware
+
+  # evaluate_policy_points.py only: when any BendLabs bend/twist sensor
+  # deviates from its start-of-episode baseline by more than
+  # bendlab_rewind_threshold, back the arm off rewind_steps control steps
+  # (replaying recorded poses in reverse at rewind_slow_factor x normal speed,
+  # opening the gripper during the retreat), clear the policy's action queue,
+  # and re-run inference from the backed-off pose. After rewind_max_attempts
+  # consecutive rewinds without rewind_clear_steps clean steps in between,
+  # hold position and abort the rollout. Sole gate for whether BendLabsRecorder
+  # gets initialized in this script (separate from use_bendlabs below, which
+  # only controls dataset logging elsewhere).
+  bendlab_rewind_enabled: false
+  bendlab_rewind_threshold: 1000.0   # degrees; per-axis |current - baseline| trigger -- untested default, tune on hardware
+  rewind_steps: 15                   # control steps to back up on a trigger
+  rewind_slow_factor: 4.0            # backup replayed at this x the normal per-step duration
+  rewind_max_attempts: 3             # consecutive rewinds (see rewind_clear_steps) before hold/abort
+  rewind_clear_steps: 15             # consecutive clean steps that reset the attempt counter
 
   use_bendlabs: true
   num_bendlabs_sensors: 4
@@ -94,6 +390,9 @@ dataset:
   # number (episode_idx) instead of pkl_path -- the real,
   # vision-tracking-derived poses written by convert_pkl_human_to_robot.py:
   #   {dataset.dir}/processed_data_pkl/expert_demos/{env_name}/{task_name}/demo_{episode_idx:04d}.pkl
+  # Also used by replay_pkl_episode.py: when set, it takes priority over
+  # repo_id (above) and derives repo_id = "<task_name>_lerobot" (matching
+  # train_point_policy.py's convention) instead of loading a raw pkl demo.
   task_name: null
   # expert_demos subfolder for the task_name path above -- matches
   # run_pipeline.sh's ENV_NAME default.
@@ -105,4 +404,4 @@ dataset:
   # ~replay_visualization (view with e.g. rqt_image_view). Non-critical --
   # never blocks or interrupts replay if cameras aren't available.
   publish_visualization: true
-  calib_path: "${.root}/dependencies/Point-Policy/calib/calib.npy"
+  calib_path: "${.root}/dependencies/Point-Policy/calib/calib_0826.npy"

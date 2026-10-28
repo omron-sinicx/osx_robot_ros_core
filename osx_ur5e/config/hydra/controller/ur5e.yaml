@@ -12,7 +12,8 @@ d_gains: [0, 0, 0, 0, 0, 0]
 selection_matrix: [1, 1, 1, 1, 1, 1]
 error_scale: 0.9
 iterations: 1.0
-stiffness: 1500
+stiffness_trans: 1500   # N/m
+stiffness_rot: 1500       # Nm/rad
 
 safety_parameters:
   max_force_torque: [70, 10]
@@ -21,7 +22,7 @@ safety_parameters:
   workspace_range:
     x: [ -0.3, 0.30]
     y: [-0.0, 0.80]
-    z: [ -0.0, 0.80]
+    z: [ -0.0, 1.20]
   stiffness_limits:
     translation: [50, 1500]
     rotation: [10, 1000]

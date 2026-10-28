@@ -527,7 +527,7 @@ def main():
             error_scale=controller_cfg.error_scale,
             iterations=controller_cfg.iterations,
         )
-        arm.update_stiffness(controller_cfg.stiffness * np.ones(6))
+        arm.update_stiffness(np.array([controller_cfg.stiffness_trans] * 3 + [controller_cfg.stiffness_rot] * 3))
         arm.auto_switch_controllers = False
         arm.async_mode = True
     arm.zero_ft_sensor()

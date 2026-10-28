@@ -17,6 +17,12 @@ Interface (all under this node's private namespace, e.g. /tracking_node/...):
             (re)starts publishing tracked points. Called by a client (e.g.
             evaluate_policy_points.py) at the start of every rollout, since
             the tracked object may have moved between episodes.
+        ~reset_and_track_manual (std_srvs/Trigger)
+            Same as ~reset_and_track, but skips DIFT entirely -- opens one
+            cv2 window per camera and blocks until the operator has clicked
+            the object keypoint(s) directly, then (re)starts publishing
+            tracked points from those clicks. Use when DIFT keeps
+            localizing the wrong pixel.
         ~stop_track (std_srvs/Trigger)
             Stops publishing tracked points (pauses tracking) until the next
             ~reset_and_track call.
@@ -44,7 +50,9 @@ Usage:
 """
 
 import argparse
+import faulthandler
 import logging
+import os
 import signal
 import sys
 import threading
@@ -197,6 +205,80 @@ def localize_and_init_tracking(points_class: PointsClass, image_recorder: RawIma
     return frame1, frame2, pts1_xy, pts2_xy
 
 
+class _ManualPickCancelled(Exception):
+    """Raised when the operator cancels a manual point pick ('q'/ESC)."""
+
+
+def manual_pick_points(frame_rgb: np.ndarray, n_points: int, window_name: str) -> np.ndarray:
+    """Blocks in a cv2 window until the operator has left-clicked n_points
+    points on frame_rgb. 'r' clears the clicks so far to restart, 'q'/ESC
+    cancels (raises _ManualPickCancelled). Returns an (n_points, 2)
+    native-resolution pixel-coord array."""
+    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    clicked = []
+
+    def _on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and len(clicked) < n_points:
+            clicked.append((float(x), float(y)))
+
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, _on_mouse)
+    try:
+        while True:
+            display = frame_bgr.copy()
+            for i, (x, y) in enumerate(clicked):
+                cv2.circle(display, (int(x), int(y)), 6, (0, 255, 0), -1)
+                cv2.putText(display, str(i), (int(x) + 8, int(y) - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(
+                display, f"Click point {min(len(clicked) + 1, n_points)}/{n_points}"
+                " -- 'r'=reset, 'q'=cancel",
+                (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA,
+            )
+            cv2.imshow(window_name, display)
+            key = cv2.waitKey(20) & 0xFF
+
+            if len(clicked) >= n_points:
+                cv2.waitKey(300)  # brief pause so the final point is visible before closing
+                break
+            if key in (ord("q"), 27):
+                raise _ManualPickCancelled(f"operator cancelled point picking for {window_name}")
+            if key == ord("r"):
+                clicked.clear()
+    finally:
+        cv2.destroyWindow(window_name)
+
+    return np.array(clicked, dtype=np.float64)
+
+
+def manual_localize_points(points_class: PointsClass, image_recorder: RawImageRecorder):
+    """Same role as localize_and_init_tracking, but the operator clicks the
+    object keypoint(s) directly instead of DIFT localizing them. Builds the
+    same (N,3) [0, x, y] tensor DIFT's find_semantic_similar_points would
+    have produced and assigns it straight into points_class, then seeds
+    tracking from it exactly as the DIFT path does."""
+    images = image_recorder.get_images()
+    frame1, frame2 = images[CAM1_TOPIC], images[CAM2_TOPIC]
+
+    points_class.add_to_image_list(frame1, PIXEL_KEY_1)
+    points_class.add_to_image_list(frame2, PIXEL_KEY_2)
+
+    n_points = points_class.initial_coords[f"{PIXEL_KEY_1}_objects"].shape[0]
+    pts1_xy = manual_pick_points(frame1, n_points, f"Pick {n_points} point(s) -- {CAM1_TOPIC}")
+    pts2_xy = manual_pick_points(frame2, n_points, f"Pick {n_points} point(s) -- {CAM2_TOPIC}")
+
+    for pixel_key, pts_xy in ((PIXEL_KEY_1, pts1_xy), (PIXEL_KEY_2, pts2_xy)):
+        labeled = np.concatenate([np.zeros((n_points, 1)), pts_xy], axis=1)  # (N,3): [0, x, y]
+        points_class.semantic_similar_points[f"{pixel_key}_objects"] = torch.tensor(
+            labeled, dtype=torch.float32
+        )
+
+    points_class.track_points(PIXEL_KEY_1, is_first_step=True)
+    points_class.track_points(PIXEL_KEY_2, is_first_step=True)
+
+    return frame1, frame2, pts1_xy, pts2_xy
+
+
 def draw_tracked_points(frame_rgb: np.ndarray, pts_xy: np.ndarray, radius: int = 6) -> np.ndarray:
     """frame_rgb: HxWx3 uint8 RGB. pts_xy: (N,2). Returns a BGR image with
     each point circled and index-labeled. Identical to
@@ -294,6 +376,7 @@ class TrackingNode:
         self.viz_pub = rospy.Publisher("~visualization_image", Image, queue_size=1)
 
         rospy.Service("~reset_and_track", Trigger, self._handle_reset_and_track)
+        rospy.Service("~reset_and_track_manual", Trigger, self._handle_reset_and_track_manual)
         rospy.Service("~stop_track", Trigger, self._handle_stop_track)
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / target_hz), self._tick)
@@ -320,6 +403,28 @@ class TrackingNode:
             self.active = True
         logger.info("Tracking (re)started after DIFT re-localization.")
         return TriggerResponse(success=True, message="Localized and tracking.")
+
+    def _handle_reset_and_track_manual(self, req) -> TriggerResponse:
+        with self._lock:
+            self.active = False
+            try:
+                self.points_class.reset_episode()
+                with torch.inference_mode():
+                    frame1, frame2, pts1_xy, pts2_xy = manual_localize_points(
+                        self.points_class, self.image_recorder
+                    )
+                panel1 = draw_tracked_points(frame1, pts1_xy)
+                panel2 = draw_tracked_points(frame2, pts2_xy)
+                self.viz_pub.publish(build_image_msg(np.hstack([panel1, panel2])))
+            except _ManualPickCancelled as e:
+                logger.warning(f"Manual point picking cancelled: {e}")
+                return TriggerResponse(success=False, message=str(e))
+            except Exception as e:
+                logger.exception("reset_and_track_manual failed")
+                return TriggerResponse(success=False, message=str(e))
+            self.active = True
+        logger.info("Tracking (re)started after manual point picking.")
+        return TriggerResponse(success=True, message="Manually localized and tracking.")
 
     def _handle_stop_track(self, req) -> TriggerResponse:
         with self._lock:
@@ -381,6 +486,19 @@ def main():
     logger.propagate = False
     if not any(isinstance(h, RichHandler) for h in logger.handlers):
         logger.addHandler(RichHandler(console=console, rich_tracebacks=True, show_path=False))
+
+    # SIGUSR1 -> dump every thread's stack to stderr, for diagnosing a hang.
+    # The service handlers and the 30 Hz _tick share self._lock, so a tick
+    # wedged in a GPU op blocks reset_and_track/stop_track -- and, through
+    # them, whichever client is waiting on that service, with nothing printed
+    # on either side. A dump from both processes says which is stuck:
+    #     kill -USR1 $(pgrep -f tracking_node.py)
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+        logger.info(f"PID {os.getpid()} -- `kill -USR1 {os.getpid()}` dumps every "
+                    "thread's stack to stderr if this node stops responding.")
+    except (AttributeError, ValueError, OSError) as e:
+        logger.warning(f"SIGUSR1 stack dump unavailable ({e}).")
 
     logger.info(f"torch.cuda.is_available() = {torch.cuda.is_available()}")
     logger.info(f"Loading point tracker for task '{args.task_name}'...")

@@ -16,7 +16,7 @@ so that /wrist_camera/... and /front_camera/... topics are publishing.
 
 Usage:
     rosrun osx_ur5e collect_image_data.py --task_name pick_cup
-    rosrun osx_ur5e collect_image_data.py --task_name pick_cup --no_depth
+    rosrun osx_ur5e collect_image_data.py --task_name pick_cup --depth
 
 Controls (OpenCV window must have focus):
     SPACE / ENTER  — start recording a new demo
@@ -135,7 +135,7 @@ def parse_args():
     )
     p.add_argument("--task_name", default=None, help="Task name (used as folder name)")
     p.add_argument("--data_dir", default=None, help="Root data directory")
-    p.add_argument("--no_depth", action="store_true", help="Disable depth recording")
+    p.add_argument("--depth", action="store_true", help="Enable depth recording (off by default)")
     p.add_argument("--fps", type=int, default=None)
     args = p.parse_args(rospy.myargv()[1:])
 
@@ -159,7 +159,7 @@ def parse_args():
     if not args.data_dir:
         p.error("--data_dir is required (pass on the CLI or set it in the config file)")
 
-    args.collect_depth = not args.no_depth
+    args.collect_depth = args.depth
     return args
 
 

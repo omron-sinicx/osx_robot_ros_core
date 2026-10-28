@@ -439,8 +439,9 @@ def main(cfg: DictConfig) -> None:
         OmegaConf.to_container(controller_cfg.selection_matrix))
     arm.set_solver_parameters(error_scale=controller_cfg.error_scale,
                               iterations=controller_cfg.iterations, publish_state_feedback=True)
-    arm.update_stiffness(controller_cfg.stiffness * np.ones(6))
-    arm.current_stiffness = np.array(controller_cfg.stiffness * np.ones(6))
+    stiffness_6vec = np.array([controller_cfg.stiffness_trans] * 3 + [controller_cfg.stiffness_rot] * 3)
+    arm.update_stiffness(stiffness_6vec)
+    arm.current_stiffness = stiffness_6vec
     arm.auto_switch_controllers = False
     arm.async_mode = True
     arm.zero_ft_sensor()
