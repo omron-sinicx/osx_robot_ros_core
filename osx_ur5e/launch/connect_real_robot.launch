@@ -60,6 +60,10 @@
   <!-- Convert joint states to /tf tranforms -->
   <!-- <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/> -->
 
+  <!-- Dashboard server answer timeout [s] (driver default: 1). PolyScope may take longer than 1 s
+       to answer 'play' while it builds the External Control program, which ur_control reports as a failure. -->
+  <param name="ur_hardware_interface/dashboard/receive_timeout" type="int" value="5" />
+
   <!-- Adapted from ur5e_bringup.launch -->
   <include file="$(find ur_robot_driver)/launch/ur_common.launch" pass_all_args="true" />
 
