@@ -133,6 +133,9 @@ class SpaceMouseController:
     def run(self):
         """Activate the compliance controller and run until shutdown or a protective stop."""
         rate = rospy.Rate(self.rate_hz)
+        # URServices methods return True whenever use_real_robot is false (Gazebo), so the
+        # protective-stop query is only meaningful on the real robot.
+        on_real_robot = self.arm.dashboard_services.use_real_robot
         self.arm.zero_ft_sensor()
         state = self.read_state()
         self.tracker.reanchor(state.pose)
@@ -143,7 +146,7 @@ class SpaceMouseController:
         rospy.loginfo("Teleoperation active")
         try:
             while not rospy.is_shutdown():
-                if self.arm.dashboard_services.is_protective_stopped():
+                if on_real_robot and self.arm.dashboard_services.is_protective_stopped():
                     rospy.logerr("Protective stop: exiting")
                     break
                 start = time.monotonic()
