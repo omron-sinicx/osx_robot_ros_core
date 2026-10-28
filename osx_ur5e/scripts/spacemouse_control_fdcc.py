@@ -31,6 +31,9 @@ SpaceMouse Compact buttons:
   RIGHT tap          zero the F/T sensor, re-anchor the target and clear a fault
   LEFT + RIGHT held  move to the home pose
 
+Keyboard (in the terminal running the script):
+  SPACE or ESC       exit; the arm returns to the joint trajectory controller
+
 Usage:
   rosrun osx_ur5e spacemouse_control_fdcc.py                 # teleoperation
   rosrun osx_ur5e spacemouse_control_fdcc.py --mouse-only    # print the mapped mouse input; no ROS/robot
@@ -47,9 +50,10 @@ import rospy
 import yaml
 
 from osx_ur5e.action_limits import DeltaActionLimiter
+from osx_ur5e.keyboard import ExitKeys
 from osx_ur5e.policy import Policy, RobotState
 from osx_ur5e.spacemouse import RightTap, SpaceMouse
-from osx_ur5e.target_tracker import TargetTracker, limit_norm, rotation_error
+from osx_ur5e.target_tracker import TargetTracker, limit_norm, rotate, rotation_error
 from ur_control.fzi_cartesian_compliance_controller import CompliantController
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config/control_fdcc.yaml"
@@ -104,10 +108,9 @@ class SpaceMouseController:
         self.tracker = make_tracker(cfg["limits"], self.dt)
 
         teleop = cfg["teleop"]
-        self.teleop_speed = np.array(3 * [teleop["max_linear_speed"]] +
-                                     3 * [np.deg2rad(teleop["max_angular_speed_deg"])])
+        self.teleop_lead = np.array(3 * [teleop["max_lead"]] + 3 * [np.deg2rad(teleop["max_lead_angle_deg"])])
         if not teleop["enable_rotation"]:
-            self.teleop_speed[3:] = 0.0
+            self.teleop_lead[3:] = 0.0
 
         self.max_force = cfg["safety"]["max_force"]
         self.max_torque = cfg["safety"]["max_torque"]
@@ -131,7 +134,7 @@ class SpaceMouseController:
     # ------------------------------------------------------------------
 
     def run(self):
-        """Activate the compliance controller and run until shutdown or a protective stop."""
+        """Activate the compliance controller and run until SPACE/ESC, shutdown or a protective stop."""
         rate = rospy.Rate(self.rate_hz)
         # URServices methods return True whenever use_real_robot is false (Gazebo), so the
         # protective-stop query is only meaningful on the real robot.
@@ -143,17 +146,24 @@ class SpaceMouseController:
             rospy.logwarn(f"Start position {state.pose[:3].round(3)} is outside the workspace box; "
                           "only motion back toward it is allowed")
         self.arm.activate_cartesian_controller()
-        rospy.loginfo("Teleoperation active")
         try:
-            while not rospy.is_shutdown():
-                if on_real_robot and self.arm.dashboard_services.is_protective_stopped():
-                    rospy.logerr("Protective stop: exiting")
-                    break
-                start = time.monotonic()
-                self.tick()
-                if time.monotonic() - start > self.dt:
-                    rospy.logwarn_throttle(5, f"Control tick took longer than {self.dt * 1e3:.0f} ms")
-                rate.sleep()
+            with ExitKeys() as keys:
+                if keys.active:
+                    rospy.loginfo("Teleoperation active: SPACE or ESC to exit")
+                else:
+                    rospy.loginfo("Teleoperation active: exit with Ctrl-C (stdin is not a terminal)")
+                while not rospy.is_shutdown():
+                    if keys.pressed():
+                        rospy.loginfo("Exit key pressed")
+                        break
+                    if on_real_robot and self.arm.dashboard_services.is_protective_stopped():
+                        rospy.logerr("Protective stop: exiting")
+                        break
+                    start = time.monotonic()
+                    self.tick()
+                    if time.monotonic() - start > self.dt:
+                        rospy.logwarn_throttle(5, f"Control tick took longer than {self.dt * 1e3:.0f} ms")
+                    rate.sleep()
         except rospy.ROSInterruptException:
             pass
         finally:
@@ -184,6 +194,7 @@ class SpaceMouseController:
         if right_tap:
             self.arm.zero_ft_sensor()
             self.tracker.reanchor(self.arm.end_effector())
+            self._reset_mode_state()
             rospy.loginfo("F/T sensor zeroed, target re-anchored")
             return
 
@@ -192,7 +203,7 @@ class SpaceMouseController:
             self.switch_mode(mode, state)
 
         if self.mode is Mode.TELEOP:
-            delta = reading.twist * self.teleop_speed * self.dt
+            delta = self.teleop_delta(reading, state)
         elif self.mode is Mode.POLICY:
             delta = self.policy_delta(state)
         else:
@@ -222,10 +233,33 @@ class SpaceMouseController:
             self.policy.reset(state)
 
     def _reset_mode_state(self):
+        self._teleop_moving = False
+        self._teleop_idle_goal = None
         self._policy_step = np.zeros(6)
         self._policy_ticks_left = 0
         self._home_reached = False
         self._warned_no_policy = False
+
+    def teleop_delta(self, reading, state):
+        """Delta toward a goal placed relative to the measured pose, not the commanded target.
+
+        While the mouse is deflected the goal leads the measured pose by max_lead times the
+        deflection, so the target cannot run away from a robot that lags behind. On release the
+        goal becomes the measured pose at that moment and is held until the mouse moves again.
+        """
+        lead = reading.twist * self.teleop_lead
+        target = self.tracker.pose
+        if np.any(lead):
+            self._teleop_moving = True
+            goal = np.concatenate([state.pose[:3] + lead[:3],
+                                   rotate(state.pose[3:], lead[3:]) if np.any(lead[3:]) else target[3:]])
+        else:
+            if self._teleop_moving:
+                self._teleop_moving = False
+                orientation = state.pose[3:] if np.any(self.teleop_lead[3:]) else target[3:]
+                self._teleop_idle_goal = np.concatenate([state.pose[:3], orientation])
+            goal = target if self._teleop_idle_goal is None else self._teleop_idle_goal
+        return np.concatenate([goal[:3] - target[:3], rotation_error(goal[3:], target[3:])])
 
     def policy_delta(self, state):
         if self._policy_ticks_left == 0:
@@ -267,18 +301,19 @@ class SpaceMouseController:
 
 
 def run_mouse_only(mouse, period_s=0.1):
-    """Print the mapped base_link command until Ctrl-C."""
+    """Print the mapped base_link command until SPACE, ESC or Ctrl-C."""
     previous_count = mouse.report_count
     try:
-        while True:
-            time.sleep(period_s)
-            reading = mouse.read()
-            count = mouse.report_count
-            twist = np.array2string(reading.twist, precision=2, suppress_small=True, sign=" ")
-            print(f"twist {twist}  left={int(reading.left)} right={int(reading.right)}  "
-                  f"reports/s={(count - previous_count) / period_s:4.0f}  "
-                  f"age={reading.report_age_s:5.2f}s  connected={reading.connected}")
-            previous_count = count
+        with ExitKeys() as keys:
+            while not keys.pressed():
+                time.sleep(period_s)
+                reading = mouse.read()
+                count = mouse.report_count
+                twist = np.array2string(reading.twist, precision=2, suppress_small=True, sign=" ")
+                print(f"twist {twist}  left={int(reading.left)} right={int(reading.right)}  "
+                      f"reports/s={(count - previous_count) / period_s:4.0f}  "
+                      f"age={reading.report_age_s:5.2f}s  connected={reading.connected}")
+                previous_count = count
     except KeyboardInterrupt:
         pass
 

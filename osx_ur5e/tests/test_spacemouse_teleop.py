@@ -5,6 +5,9 @@ Run inside the container with the workspace sourced:
 """
 
 import importlib.util
+import os
+import select
+import termios
 import time
 import unittest
 from pathlib import Path
@@ -12,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from osx_ur5e.keyboard import ExitKeys, contains_exit_key
 from osx_ur5e.policy import Policy
 from osx_ur5e.spacemouse import MouseReading, RightTap, SpaceMouse, map_to_base
 from osx_ur5e.target_tracker import rotate, rotation_error
@@ -101,6 +105,16 @@ class DriftingArm(FakeArm):
         self.pose[1] -= 1e-4
 
 
+class LaggingArm(FakeArm):
+    """Each command moves the measured position only 1 % of the way to the commanded one,
+    slower than the limits.max_linear_velocity cap."""
+
+    def set_cartesian_target_pose(self, pose):
+        self.commanded = np.array(pose, dtype=float)
+        self.pose[:3] += 0.01 * (self.commanded[:3] - self.pose[:3])
+        self.pose[3:] = self.commanded[3:]
+
+
 class ConstantPolicy(Policy):
     def __init__(self, delta):
         self.delta = np.asarray(delta, dtype=float)
@@ -146,6 +160,41 @@ class TestRightTap(unittest.TestCase):
 
     def test_tap_after_chord(self):
         self.assertEqual(self.run_sequence([(1, 1), (0, 0), (0, 1), (0, 0)]), [False, False, False, True])
+
+
+class TestExitKeys(unittest.TestCase):
+    def test_space_and_lone_esc_exit_but_escape_sequences_do_not(self):
+        for data in (b" ", b"\x1b", b"ab\x1b", b"\x1b[A\x1b", b"\x1b\x1b[A"):
+            self.assertTrue(contains_exit_key(data), data)
+        for data in (b"", b"q\n", b"\x1b[A", b"\x1bOP", b"\x1b[A\x1bOP"):
+            self.assertFalse(contains_exit_key(data), data)
+
+    def test_pseudo_terminal_round_trip_restores_settings(self):
+        master, slave = os.openpty()
+        try:
+            before = termios.tcgetattr(slave)
+            with ExitKeys(slave) as keys:
+                self.assertTrue(keys.active)
+                for data, expected in ((b"\x1b[A", False), (b"x", False), (b" ", True), (b"\x1b", True)):
+                    os.write(master, data)
+                    select.select([slave], [], [], 1.0)
+                    self.assertEqual(keys.pressed(), expected, data)
+                self.assertFalse(keys.pressed())
+            self.assertEqual(termios.tcgetattr(slave), before)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_not_a_terminal_is_inactive(self):
+        read_end, write_end = os.pipe()
+        try:
+            with ExitKeys(read_end) as keys:
+                os.write(write_end, b" ")
+                self.assertFalse(keys.active)
+                self.assertFalse(keys.pressed())
+        finally:
+            os.close(read_end)
+            os.close(write_end)
 
 
 class TestSpaceMouseReader(unittest.TestCase):
@@ -263,13 +312,25 @@ class TestController(unittest.TestCase):
         for _ in range(n):
             self.controller.tick()
 
-    def test_teleop_full_deflection_moves_at_configured_speed(self):
+    def test_teleop_speed_capped_by_limits(self):
         self.make()
         self.ticks(100, twist=(1, 0, 0, 0, 0, 0))
         travelled = self.arm.pose[0] - HOME[0]
-        speed = CFG["teleop"]["max_linear_speed"]
+        speed = CFG["limits"]["max_linear_velocity"]
         self.assertGreater(travelled, 0.9 * speed)
         self.assertLessEqual(travelled, speed + 1e-9)
+
+    def test_teleop_goal_follows_measured_pose_of_lagging_robot(self):
+        self.make(arm_class=LaggingArm)
+        self.ticks(200, twist=(0.5, 0, 0, 0, 0, 0))
+        lead = self.arm.commanded[0] - self.arm.pose[0]
+        self.assertAlmostEqual(lead, 0.5 * CFG["teleop"]["max_lead"], delta=1e-3)
+        released_at = self.arm.pose[0]
+        self.ticks(100)
+        self.assertLess(abs(self.arm.commanded[0] - released_at), 0.25 * lead)
+        held = self.arm.commanded.copy()
+        self.ticks(50)
+        np.testing.assert_allclose(self.arm.commanded, held)
 
     def test_idle_mouse_keeps_target_while_robot_drifts(self):
         self.make(arm_class=DriftingArm)
@@ -281,7 +342,7 @@ class TestController(unittest.TestCase):
         self.make(cfg={**CFG, "teleop": {**CFG["teleop"], "enable_rotation": True}})
         self.ticks(100, twist=(0, 0, 0, 0, 0, 1))
         angle = rotation_error(self.arm.pose[3:], HOME[3:])
-        self.assertGreater(angle[2], 0.9 * np.deg2rad(CFG["teleop"]["max_angular_speed_deg"]))
+        self.assertGreater(angle[2], 0.8 * np.deg2rad(CFG["limits"]["max_angular_velocity_deg"]))
 
     def test_rotation_ignored_when_disabled(self):
         self.make(cfg={**CFG, "teleop": {**CFG["teleop"], "enable_rotation": False}})
