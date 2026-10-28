@@ -89,6 +89,18 @@ class FakeArm:
         self.pose = np.array(pose, dtype=float)
 
 
+class DriftingArm(FakeArm):
+    """The measured pose creeps along -y whatever is commanded, as observed in Gazebo."""
+
+    def __init__(self, pose):
+        super().__init__(pose)
+        self.commands = []
+
+    def set_cartesian_target_pose(self, pose):
+        self.commands.append(np.array(pose, dtype=float))
+        self.pose[1] -= 1e-4
+
+
 class ConstantPolicy(Policy):
     def __init__(self, delta):
         self.delta = np.asarray(delta, dtype=float)
@@ -221,10 +233,26 @@ class TestTargetTracker(unittest.TestCase):
             pose = self.tracker.step(np.array([0.001, 0, 0, 0, 0, 0]), HOME)
         self.assertLessEqual(np.linalg.norm(pose[:3] - HOME[:3]), CFG["limits"]["max_tracking_error"] + 1e-12)
 
+    def test_idle_target_stays_put_while_robot_drifts(self):
+        self.tracker.reanchor(HOME)
+        measured = HOME.copy()
+        for _ in range(500):
+            measured[1] -= 1e-4
+            pose = self.tracker.step(np.zeros(6), measured)
+        np.testing.assert_allclose(pose, HOME)
+
+    def test_beyond_lead_limit_only_steps_toward_robot_pass(self):
+        measured = HOME.copy()
+        measured[1] -= 0.05
+        self.tracker.reanchor(HOME)
+        self.assertAlmostEqual(self.tracker.step(np.array([0, 0.0005, 0, 0, 0, 0]), measured)[1], HOME[1])
+        self.tracker.reanchor(HOME)
+        self.assertLess(self.tracker.step(np.array([0, -0.0005, 0, 0, 0, 0]), measured)[1], HOME[1])
+
 
 class TestController(unittest.TestCase):
-    def make(self, start=HOME, policy=None):
-        self.arm = FakeArm(start)
+    def make(self, start=HOME, policy=None, arm_class=FakeArm):
+        self.arm = arm_class(start)
         self.mouse = FakeMouse()
         self.controller = smc.SpaceMouseController(CFG, self.arm, self.mouse, policy=policy,
                                                    clock=time.monotonic)
@@ -242,6 +270,12 @@ class TestController(unittest.TestCase):
         speed = CFG["teleop"]["max_linear_speed"]
         self.assertGreater(travelled, 0.9 * speed)
         self.assertLessEqual(travelled, speed + 1e-9)
+
+    def test_idle_mouse_keeps_target_while_robot_drifts(self):
+        self.make(arm_class=DriftingArm)
+        self.ticks(500)
+        self.assertGreater(HOME[1] - self.arm.pose[1], 0.04)
+        np.testing.assert_allclose(np.ptp(self.arm.commands, axis=0), 0.0, atol=1e-12)
 
     def test_rotation_follows_twist(self):
         self.make()

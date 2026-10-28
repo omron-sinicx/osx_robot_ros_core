@@ -23,11 +23,29 @@ def limit_norm(vector, max_norm):
     return vector * (max_norm / norm) if norm > max_norm else vector
 
 
+def limit_lead(current, proposed, measured, max_lead):
+    """Shorten the step current -> proposed so it does not take the target further than
+    max(max_lead, current lead) from the measured position.
+
+    The step is only ever shortened: a lead the target already has (the robot drifted, or contact
+    holds it back) is kept, so the target never moves without a commanded step.
+    """
+    step = proposed - current
+    lead = current - measured
+    radius = max(max_lead, np.linalg.norm(lead))
+    if np.linalg.norm(proposed - measured) <= radius:
+        return proposed
+    # Largest s in [0, 1] with |lead + s * step| <= radius.
+    a, b, c = step @ step, lead @ step, lead @ lead - radius ** 2
+    s = (-b + np.sqrt(max(b * b - a * c, 0.0))) / a
+    return current + np.clip(s, 0.0, 1.0) * step
+
+
 class TargetTracker:
     """Owns the commanded tool0 pose [x y z qx qy qz qw] and limits every step applied to it.
 
     A step is limited, in order, by the DeltaActionLimiter (per-axis velocity and acceleration),
-    the workspace box, and the max distance between commanded and measured position.
+    the workspace box, and max_tracking_error (see limit_lead). Without a step the target stays put.
     """
 
     def __init__(self, limiter, dt, workspace_min, workspace_max, max_tracking_error):
@@ -54,6 +72,7 @@ class TargetTracker:
         position = np.clip(current + d_position,
                            np.minimum(self.workspace_min, current),
                            np.maximum(self.workspace_max, current))
-        position = measured_pose[:3] + limit_norm(position - measured_pose[:3], self.max_tracking_error)
+        position = limit_lead(current, position, np.asarray(measured_pose[:3], dtype=float),
+                              self.max_tracking_error)
         self.pose = np.concatenate([position, rotate(self.pose[3:], d_rotation)])
         return self.pose.copy()

@@ -31,7 +31,7 @@ limits:                                 # applied to every commanded step (teleo
   max_linear_acceleration: 0.5          # m/s^2 per axis
   max_angular_velocity_deg: 30.0        # deg/s per axis
   max_angular_acceleration_deg: 180.0   # deg/s^2 per axis
-  max_tracking_error: 0.02              # max distance between commanded and measured position
+  max_tracking_error: 0.02              # commanded steps may not put the target further than this from the measured position
   workspace:                            # box for the commanded tool0 position
     x: [-0.25, 0.25]                    # home tool0 is about (-0.005, 0.460, 0.618): x/y are home +- 0.25
     y: [0.21, 0.71]
