@@ -24,7 +24,7 @@ spacemouse:
 teleop:
   max_linear_speed: 0.05                # m/s at full deflection
   max_angular_speed_deg: 15.0           # deg/s at full deflection
-  enable_rotation: true
+  enable_rotation: false                # false: mouse rotation is ignored and the tool orientation is held
 
 limits:                                 # applied to every commanded step (teleop, policy, homing)
   max_linear_velocity: 0.10             # m/s per axis
@@ -33,7 +33,7 @@ limits:                                 # applied to every commanded step (teleo
   max_angular_acceleration_deg: 180.0   # deg/s^2 per axis
   max_tracking_error: 0.02              # commanded steps may not put the target further than this from the measured position
   workspace:                            # box for the commanded tool0 position
-    x: [-0.25, 0.25]                    # home tool0 is about (-0.005, 0.460, 0.618): x/y are home +- 0.25
+    x: [-0.25, 0.25]
     y: [0.21, 0.71]
     z: [0.45, 1.0]
 
@@ -42,7 +42,7 @@ safety:
   max_torque: 5.0                       # Nm
 
 home:
-  joints: [1.278505, -1.635253, 1.288246, -1.200341, -1.534033, -0.465459]   # configs/rri/local/robot-home.json
+  joints: [1.3617, -1.5785, 1.2242, -1.2158, -1.5637, -0.3771]
   max_linear_speed: 0.03                # m/s
   max_angular_speed_deg: 10.0           # deg/s
   position_tolerance: 0.002

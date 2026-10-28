@@ -251,10 +251,10 @@ class TestTargetTracker(unittest.TestCase):
 
 
 class TestController(unittest.TestCase):
-    def make(self, start=HOME, policy=None, arm_class=FakeArm):
+    def make(self, start=HOME, policy=None, arm_class=FakeArm, cfg=CFG):
         self.arm = arm_class(start)
         self.mouse = FakeMouse()
-        self.controller = smc.SpaceMouseController(CFG, self.arm, self.mouse, policy=policy,
+        self.controller = smc.SpaceMouseController(cfg, self.arm, self.mouse, policy=policy,
                                                    clock=time.monotonic)
         self.controller.tracker.reanchor(start)
 
@@ -277,11 +277,17 @@ class TestController(unittest.TestCase):
         self.assertGreater(HOME[1] - self.arm.pose[1], 0.04)
         np.testing.assert_allclose(np.ptp(self.arm.commands, axis=0), 0.0, atol=1e-12)
 
-    def test_rotation_follows_twist(self):
-        self.make()
+    def test_rotation_follows_twist_when_enabled(self):
+        self.make(cfg={**CFG, "teleop": {**CFG["teleop"], "enable_rotation": True}})
         self.ticks(100, twist=(0, 0, 0, 0, 0, 1))
         angle = rotation_error(self.arm.pose[3:], HOME[3:])
         self.assertGreater(angle[2], 0.9 * np.deg2rad(CFG["teleop"]["max_angular_speed_deg"]))
+
+    def test_rotation_ignored_when_disabled(self):
+        self.make(cfg={**CFG, "teleop": {**CFG["teleop"], "enable_rotation": False}})
+        self.ticks(100, twist=(1, 0, 0, 1, 1, 1))
+        np.testing.assert_allclose(self.arm.pose[3:], HOME[3:], atol=1e-12)
+        self.assertGreater(self.arm.pose[0], HOME[0])
 
     def test_right_tap_zeroes_ft_without_motion(self):
         self.make()
