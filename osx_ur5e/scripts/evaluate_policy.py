@@ -27,8 +27,12 @@ Usage:
     python evaluate_policy.py eval.force_layer.enabled=true eval.force_layer.dry_run=true
 
     # FCT: command the ref pose + an explicit target wrench instead of the
-    # virtual target (combines with the force layer, which then sends F*):
+    # virtual target. The force is the policy's normal_force (default) or a
+    # fixed external target along the predicted contact direction; no force
+    # layer needed (combining with it makes the layer send its F* instead):
     python evaluate_policy.py eval.explicit_wrench.enabled=true
+    python evaluate_policy.py eval.explicit_wrench.enabled=true \
+        eval.explicit_wrench.force_source=external eval.explicit_wrench.external_target_force=25
 
     # On-demand force via ROS topic (external mode):
     rostopic pub /comet/target_force std_msgs/Float32 "data: 25.0" -r 5
@@ -54,7 +58,10 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from comet.eval import RealRobotEvalRunner, build_policy_adapter
-from comet.eval.force_layer_hooks import assert_factored_actions_for_explicit_wrench
+from comet.eval.force_layer_hooks import (
+    assert_factored_actions_for_explicit_wrench,
+    resolve_explicit_wrench_config,
+)
 from comet.eval.io import install_sigint_handler, start_stop_listener
 from osx_ur5e.fdcc_env import FDCCEnv
 from osx_ur5e.utils import (
@@ -94,13 +101,10 @@ def main(cfg: DictConfig) -> None:
 
         env = FDCCEnv(config=adapter.env_config)
 
-        if OmegaConf.select(cfg, "eval.explicit_wrench.enabled", default=False):
+        explicit_wrench = resolve_explicit_wrench_config(cfg)
+        if explicit_wrench is not None:
             assert_factored_actions_for_explicit_wrench(adapter.action_keys)
-            env.set_explicit_wrench(
-                True,
-                max_force=OmegaConf.select(cfg, "eval.explicit_wrench.max_force", default=60.0),
-                max_torque=OmegaConf.select(cfg, "eval.explicit_wrench.max_torque", default=5.0),
-            )
+            env.set_explicit_wrench(True, **explicit_wrench)
 
         rollout_recorder = None
         if OmegaConf.select(cfg, "eval.record_rosbag", default=False):

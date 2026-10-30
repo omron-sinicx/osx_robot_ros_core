@@ -45,14 +45,34 @@ class FDCCEnv(BaseEnv):
         self.explicit_wrench = False
         self.explicit_max_force = 60.0
         self.explicit_max_torque = 5.0
+        # force magnitude: the policy's normal_force, or a fixed external target
+        # sent along the policy's contact_direction wherever the policy intends
+        # contact (|normal_force| >= force_intent_threshold)
+        self.explicit_force_source = "policy"
+        self.explicit_external_target_force = 0.0
+        self.explicit_force_intent_threshold = 0.0
 
-    def set_explicit_wrench(self, enabled, max_force=60.0, max_torque=5.0):
+    def set_explicit_wrench(self, enabled, max_force=60.0, max_torque=5.0,
+                            force_source="policy", external_target_force=0.0,
+                            force_intent_threshold=0.0):
+        if force_source not in ("policy", "external"):
+            raise ValueError(
+                f"explicit wrench force_source must be 'policy' or 'external', got {force_source!r}")
         self.explicit_wrench = bool(enabled)
         self.explicit_max_force = float(max_force)
         self.explicit_max_torque = float(max_torque)
+        self.explicit_force_source = force_source
+        self.explicit_external_target_force = float(external_target_force)
+        self.explicit_force_intent_threshold = float(force_intent_threshold)
         if self.explicit_wrench:
+            if force_source == "external":
+                force_desc = (f"external target {self.explicit_external_target_force} N where "
+                              f"|policy normal_force| >= {self.explicit_force_intent_threshold} N")
+            else:
+                force_desc = "policy normal_force"
             rospy.loginfo(f"Explicit wrench mode: commanding the ref pose + target wrench "
-                          f"(max_force={self.explicit_max_force} N, max_torque={self.explicit_max_torque} Nm)")
+                          f"(force: {force_desc}, max_force={self.explicit_max_force} N, "
+                          f"max_torque={self.explicit_max_torque} Nm)")
 
     def clear_target_wrench(self):
         self.target_wrench = np.zeros(6)
@@ -249,11 +269,15 @@ class FDCCEnv(BaseEnv):
                                                              orientation_representation="quaternion",
                                                              full_stiffness_matrix=True)
             if self.explicit_wrench:
+                force_override = (self.explicit_external_target_force
+                                  if self.explicit_force_source == "external" else None)
                 controller_action["action.target_wrench"] = compute_explicit_wrench_from_factored(
                     action,
                     characteristic_length=self.characteristic_length,
                     max_force=self.explicit_max_force,
-                    max_torque=self.explicit_max_torque)
+                    max_torque=self.explicit_max_torque,
+                    force_override=force_override,
+                    force_intent_threshold=self.explicit_force_intent_threshold)
         elif "action.virtual_target_position" in action:  # VT mode (vt_-scoped columns)
             self.last_compliance_stiffness = action["action.vt_estimated_stiffness"].item()
             vt_pos = action["action.virtual_target_position"]
