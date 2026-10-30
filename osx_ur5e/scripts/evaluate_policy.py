@@ -28,8 +28,8 @@ Usage:
 
     # FCT: command the ref pose + an explicit target wrench instead of the
     # virtual target. The force is the policy's normal_force (default) or a
-    # fixed external target along the predicted contact direction; no force
-    # layer needed (combining with it makes the layer send its F* instead):
+    # fixed external target along the predicted contact direction. Mutually
+    # exclusive with the force layer (the controller closes the force loop):
     python evaluate_policy.py eval.explicit_wrench.enabled=true
     python evaluate_policy.py eval.explicit_wrench.enabled=true \
         eval.explicit_wrench.force_source=external eval.explicit_wrench.external_target_force=25
