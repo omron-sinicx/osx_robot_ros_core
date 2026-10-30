@@ -25,20 +25,31 @@ from comet.common.utils.bspline_utils import FCT_CHANNEL_SLICES, FCT_DIM, BSplin
 
 from osx_ur5e.bspline_replay import (  # noqa: E402
     DENSE_ACTION_KEYS,
+    DENSE_REPLAY_ACTION_TYPES,
     FORCE,
     POS,
+    ROT,
+    STIFF,
+    DenseReplayResult,
     FittedEpisodeCurve,
     MockFDCCEnv,
     Playhead,
     PlayheadConfig,
     StoredSegmentCurve,
     build_episode_curve,
+    compare_dense_with_dataset,
     compare_with_dataset,
+    compare_with_dense,
+    dense_action_columns,
+    dense_summary_text,
     episode_ground_truth,
     fct_to_env_action,
     fit_config_from_info,
+    pair_spline_with_dense,
+    run_dense_loop,
     run_tick_loop,
     segment_matrices,
+    summary_text,
 )
 
 DEMO_FPS = 60.0
@@ -66,6 +77,24 @@ def make_episode(T=360, onset=120, offset=260, ramp=60.0):
     channels = np.hstack([pos, rot, direction, torque_direction, force, torque, stiffness])
     assert channels.shape == (T, FCT_DIM)
     return channels, flag
+
+
+def dense_table(channels: np.ndarray) -> dict:
+    """A synthetic episode table carrying both the raw and the factored dense columns."""
+    stiffness = channels[:, STIFF]                       # (T, 1)
+    table = {
+        # raw_actions: the recorded pose command + the 6-vector stiffness diagonal
+        "action.position": channels[:, POS].copy(),
+        "action.rotation_ortho6": channels[:, ROT].copy(),
+        "action.stiffness_diag": np.repeat(stiffness, 6, axis=1),
+        # what a replay reads back / the vt fallback reference
+        "observation.eef.position": channels[:, POS].copy(),
+        "observation.eef.rotation_ortho6": channels[:, ROT].copy(),
+    }
+    # factored_actions: the seven FCT channel groups
+    for key in DENSE_ACTION_KEYS:
+        table[key] = channels[:, FCT_CHANNEL_SLICES[key[len("action."):]]].copy()
+    return table
 
 
 def count_ticks(cfg: PlayheadConfig, u_end: float, f_pred=0.0, f_meas=0.0) -> int:
@@ -229,6 +258,131 @@ def test_mock_env_tick_loop_tracks_the_curve():
 
 
 # ---------------------------------------------------------------------------
+# dense (per-row) replay of the dataset actions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("action_type", ["raw_actions", "factored_actions"])
+def test_dense_loop_replays_every_row(action_type):
+    channels, _ = make_episode()
+    table = dense_table(channels)
+    env = MockFDCCEnv(control_fps=DEMO_FPS, initial_position=channels[0, POS], initial_ortho6=channels[0, ROT])
+    env.reset(move_robot=False)
+    env.activate_compliance_control()
+    result = run_dense_loop(env, table, action_type, control_fps=DEMO_FPS, demo_fps=DEMO_FPS)
+
+    T = len(channels)
+    assert result.label == action_type and action_type in DENSE_REPLAY_ACTION_TYPES
+    assert result.n_ticks == T
+    np.testing.assert_array_equal(result.ds_indices, np.arange(T))
+    # every type commands the demonstrated reference position here, and the mock
+    # goes exactly there
+    np.testing.assert_allclose(result.command_pos, channels[:, POS], atol=1e-12)
+    np.testing.assert_allclose(result.eef_pos, result.command_pos, atol=1e-12)
+    assert np.all(result.wrench == 0.0)
+    assert not result.force_violation and result.clip_count == 0 and not result.clip_triggers
+    assert np.all(result.stiffness == channels[:, STIFF][:, 0])
+    assert result.demo_span_s == pytest.approx((T - 1) / DEMO_FPS)
+    assert result.nominal_duration_s == pytest.approx(T / DEMO_FPS)
+    # the env saw the right dict shape for this action type
+    assert len(env.actions) == T and len(env.controller_actions) == T
+    assert set(env.controller_actions[0]) == {"action.position", "action.orientation", "action.stiffness_diag"}
+    if action_type == "raw_actions":
+        assert set(env.actions[0]) == {"action.position", "action.orientation", "action.stiffness_diag"}
+        assert env.actions[0]["action.orientation"].shape == (4,)
+    else:
+        assert set(env.actions[0]) == set(DENSE_ACTION_KEYS)
+        assert env.controller_actions[0]["action.stiffness_diag"].shape == (6, 6)
+    assert set(result.arrays()) == {"ds_indices", "command_pos", "eef_pos", "eef_quat",
+                                    "wrench", "stiffness", "clipped", "tick_time"}
+
+
+def test_dense_action_columns():
+    assert dense_action_columns("raw_actions") == [
+        "action.position", "action.rotation_ortho6", "action.stiffness_diag"]
+    assert dense_action_columns("factored_actions") == list(DENSE_ACTION_KEYS)
+    vt_all = dense_action_columns("virtual_target_actions")
+    assert "action.vt_ref_position" in vt_all and "observation.eef.position" in vt_all
+    # optional columns are dropped when the dataset lacks them, required ones raise
+    vt_some = dense_action_columns("virtual_target_actions", available=[
+        "action.virtual_target_position", "action.virtual_target_rotation",
+        "action.vt_estimated_stiffness", "observation.eef.position", "observation.eef.rotation_ortho6"])
+    assert "action.vt_ref_position" not in vt_some
+    with pytest.raises(KeyError):
+        dense_action_columns("raw_actions", available=["action.position"])
+    with pytest.raises(ValueError):
+        dense_action_columns("nope")
+
+
+def test_compare_with_dense_pairs_on_the_dataset_frame():
+    channels, flag = make_episode()
+    config = BSplineFitConfig(fps=DEMO_FPS)
+    table = dense_table(channels)
+
+    dense_env = MockFDCCEnv(control_fps=DEMO_FPS, initial_position=channels[0, POS], initial_ortho6=channels[0, ROT])
+    dense = run_dense_loop(dense_env, table, "factored_actions", control_fps=DEMO_FPS, demo_fps=DEMO_FPS)
+
+    curve = FittedEpisodeCurve(channels, flag, config)
+    spline_env = MockFDCCEnv(control_fps=DEMO_FPS, initial_position=channels[0, POS], initial_ortho6=channels[0, ROT])
+    cfg = PlayheadConfig(speed=2.0, demo_fps=DEMO_FPS, control_fps=DEMO_FPS)
+    spline = run_tick_loop(spline_env, curve, Playhead(cfg, *curve.domain))
+
+    vs = compare_with_dense(spline, dense)
+    assert vs["n_paired"] == spline.n_ticks
+    # both replays track their command exactly, so what is left is the fit error
+    assert vs["mean_pos_err_vs_dense_m"] < 3e-3 and vs["max_pos_err_vs_dense_m"] < 3e-3
+    assert vs["mean_cmd_pos_err_vs_dense_m"] < 3e-3
+    assert vs["mean_meas_force_err_vs_dense_N"] == 0.0
+    assert vs["total_meas_force_err_vs_dense_N"] == 0.0
+    assert vs["mean_stiffness_err_vs_dense"] == pytest.approx(0.0, abs=1e-9)
+    assert all(isinstance(v, float) for v in vs.values())
+    # the extra summary line only appears when the dense comparison is passed
+    assert "vs dense replay" in summary_text(0, spline, compare_with_dataset(spline, {
+        "n_frames": np.array(len(channels)), "eef_pos": channels[:, POS],
+        "label_ref_position": channels[:, POS], "gated_force": channels[:, FORCE][:, 0],
+        "label_force": channels[:, FORCE][:, 0], "stiffness": channels[:, STIFF][:, 0],
+    }), vs_dense=vs)
+
+    # a dense replay that ended early pairs only the frames it reached
+    cut = dense.n_ticks // 3
+    truncated = DenseReplayResult(
+        action_type=dense.action_type, demo_fps=dense.demo_fps, control_fps=dense.control_fps,
+        ds_indices=dense.ds_indices[:cut], command_pos=dense.command_pos[:cut], eef_pos=dense.eef_pos[:cut],
+        eef_quat=dense.eef_quat[:cut], wrench=dense.wrench[:cut], stiffness=dense.stiffness[:cut],
+        clipped=dense.clipped[:cut], tick_time=dense.tick_time[:cut], force_violation=True,
+        duration_s=dense.duration_s,
+    )
+    si, di = pair_spline_with_dense(spline, truncated)
+    assert len(si) == len(di) < spline.n_ticks
+    assert np.all(spline.ds_indices[si] == truncated.ds_indices[di])
+    vs_cut = compare_with_dense(spline, truncated)
+    assert 0 < vs_cut["n_paired"] < vs["n_paired"]
+    # nothing in common -> the empty dict
+    empty = DenseReplayResult(
+        action_type="raw_actions", demo_fps=DEMO_FPS, control_fps=DEMO_FPS,
+        ds_indices=np.zeros(0, dtype=int), command_pos=np.zeros((0, 3)), eef_pos=np.zeros((0, 3)),
+        eef_quat=np.zeros((0, 4)), wrench=np.zeros((0, 6)), stiffness=np.zeros(0),
+        clipped=np.zeros(0, dtype=bool),
+    )
+    assert compare_with_dense(spline, empty) == {"n_paired": 0}
+
+
+def test_quaternion_from_ortho6_matches_ur_control():
+    """The dense raw replay converts ortho6 with comet's math_utils; FDCCEnv uses ur_control."""
+    from comet.common.utils import math_utils as mu
+    tr = pytest.importorskip("ur_control.transformations")
+
+    rng = np.random.default_rng(7)
+    for _ in range(8):
+        q, _ = np.linalg.qr(rng.normal(size=(3, 3)))
+        if np.linalg.det(q) < 0:
+            q[:, 0] *= -1
+        ortho6 = q[:, :2].T.reshape(-1)
+        np.testing.assert_allclose(mu.quaternion_from_ortho6(ortho6),
+                                   tr.quaternion_from_ortho6(ortho6), atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
 # stored segments (source="dataset") on a real episode
 # ---------------------------------------------------------------------------
 
@@ -302,3 +456,45 @@ def test_mock_replay_of_dataset_episode_matches_ground_truth(dataset_episode):
     assert comparison["mean_pos_err_vs_label_m"] < 1.5e-3
     assert comparison["mean_cmd_force_err_vs_label_N"] < 0.2
     assert comparison["clip_count"] == 0
+
+
+def test_mock_dense_replay_of_dataset_episode(dataset_episode):
+    """The raw dataset commands replayed row by row on the mock (the 1x baseline)."""
+    table, info = dataset_episode
+    config = fit_config_from_info(info)
+    gt = episode_ground_truth(table, config)
+    for col in dense_action_columns("raw_actions", available=list(table.columns)):
+        assert col in table.columns
+
+    env = MockFDCCEnv(control_fps=DEMO_FPS, initial_position=gt["eef_pos"][0], initial_ortho6=gt["eef_rot6"][0])
+    env.reset(move_robot=False)
+    env.activate_compliance_control()
+    result = run_dense_loop(env, table, "raw_actions", control_fps=DEMO_FPS, demo_fps=DEMO_FPS)
+
+    n = int(gt["n_frames"])
+    assert result.n_ticks == n and not result.force_violation
+    np.testing.assert_array_equal(result.ds_indices, np.arange(n))
+    # the mock jumps to the commanded pose, so tracking is exact ...
+    np.testing.assert_allclose(result.eef_pos, result.command_pos, atol=1e-12)
+
+    comparison = compare_dense_with_dataset(result, gt)
+    assert comparison["mean_pos_err_vs_command_m"] == 0.0
+    # ... so what is left is the demo's own command-vs-pose offset: the recorded
+    # action leads the eef by the compliance displacement (~2 cm on this episode)
+    assert 1e-3 < comparison["mean_pos_err_vs_obs_m"] < 5e-2
+    assert comparison["clip_count"] == 0
+    assert comparison["n_ticks"] == n
+    assert all(isinstance(v, float) for v in comparison.values())
+    assert f"[raw_actions] episode 0" in dense_summary_text(0, result, comparison)
+
+    # ... and the spline replay can be paired against it on the dataset frame
+    curve = build_episode_curve(table, "dataset", config)
+    spline_env = MockFDCCEnv(control_fps=DEMO_FPS, initial_position=gt["eef_pos"][0], initial_ortho6=gt["eef_rot6"][0])
+    cfg = PlayheadConfig(speed=2.0, demo_fps=DEMO_FPS, control_fps=DEMO_FPS)
+    spline = run_tick_loop(spline_env, curve, Playhead(cfg, *curve.domain))
+    vs = compare_with_dense(spline, result)
+    assert vs["n_paired"] == spline.n_ticks
+    # the two replays command different things (the fitted FCT reference vs the
+    # recorded pose action), so on the mock this is their offset, not a tracking
+    # error — it stays in the centimetre range the compliance displacement spans
+    assert vs["mean_pos_err_vs_dense_m"] < 5e-2

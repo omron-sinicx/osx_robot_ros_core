@@ -21,11 +21,25 @@ wrench, stiffness, clip flags), a comparison plot on the demo time base
 (dataset frame = round(u)), a text summary, and under ROS also the sibling's
 ``plot_episode_comparison`` figure.
 
+``+eval.comparison=true`` adds the **dense baseline**: before the spline
+replays, the same episode is replayed row by row from the raw dataset commands
+(``+eval.comparison_action``, default ``raw_actions``) on the same env, one row
+per control tick — what ``test_replay_episode.py`` does. That answers two
+questions in one run: whether the dataset actions themselves still reproduce
+the recording (environment drift since it was recorded), and how the spline
+replay compares against that 1x baseline rather than only against the dataset.
+Its own ``ep<i>_<action_type>_*`` outputs are written, it is overlaid on every
+spline plot, and ``vs_dense_*`` numbers are merged into each spline summary.
+
 Usage (real robot):
     python test_replay_episode_bspline.py --config-name edge_sink_wipe +eval.speed_up=[1,2]
     python test_replay_episode_bspline.py --config-name edge_sink_wipe +eval.source=fit +eval.control_fps=60
     # force-dependent rate (section 3.3), constant otherwise:
     python test_replay_episode_bspline.py --config-name edge_sink_wipe +eval.playhead.alpha=0.2 +eval.playhead.deadband=1.0
+
+    # spline replay vs the dense dataset actions on the same env:
+    python test_replay_episode_bspline.py --config-name edge_sink_wipe +eval.speed_up=[1,2] \\
+        +eval.comparison=true +eval.comparison_action=raw_actions
 
 Mock env (no ROS, no robot; runs on the training machine):
     python test_replay_episode_bspline.py --config-name edge_sink_wipe +eval.mock_env=true \\
@@ -36,7 +50,9 @@ Mock env (no ROS, no robot; runs on the training machine):
 (list or "1,2" string, default [1]), control_fps (dataset fps), realtime
 (true on the robot, false in mock mode; false = no sleeping), prompt (true;
 skipped in mock mode),
-num_episodes (1), playhead.{alpha (0), deadband (1 N), rate_min (0.1),
+num_episodes (1), comparison (false: also replay the dense dataset actions as
+the 1x baseline), comparison_action (raw_actions | factored_actions |
+virtual_target_actions), playhead.{alpha (0), deadband (1 N), rate_min (0.1),
 contact_cap (off), contact_force_threshold (2 N)}, bspline.<field> overrides of
 the fit config (e.g. +eval.bspline.ref_source=dataset), sibling_plot (true).
 """
@@ -73,17 +89,25 @@ if str(_SRC_DIR) not in sys.path:
 
 from osx_ur5e.bspline_replay import (  # noqa: E402
     CURVE_SOURCES,
+    DENSE_COMMAND_POSITION_KEY,
+    DENSE_REPLAY_ACTION_TYPES,
+    DenseReplayResult,
     MockFDCCEnv,
     Playhead,
     PlayheadConfig,
     SplineReplayResult,
     build_episode_curve,
+    compare_dense_with_dataset,
     compare_with_dataset,
+    compare_with_dense,
+    dense_action_columns,
+    dense_summary_text,
     episode_columns,
     episode_ground_truth,
     episode_table_from_frames,
     fit_config_from_info,
     plot_spline_replay,
+    run_dense_loop,
     run_tick_loop,
     save_result_arrays,
     summary_text,
@@ -208,6 +232,46 @@ def replay_curve_on_env(
     return result
 
 
+def replay_dense_on_env(
+    env: Any,
+    table: dict,
+    action_type: str,
+    *,
+    control_fps: float,
+    demo_fps: float,
+    start_qpos: np.ndarray,
+    episode_idx: int,
+    prompt: bool,
+    sleep_fn: Callable[[float], None] | None,
+) -> DenseReplayResult:
+    """The dense (per dataset row) baseline replay, step for step like ``replay_curve_on_env``."""
+    n_rows = int(len(table[DENSE_COMMAND_POSITION_KEY[action_type]]))
+    tag = f"dense {action_type}"
+
+    env.reset(move_robot=False)
+    # reset(move_robot=False) skips the controller parameters (gains, mode,
+    # selection matrix); push them explicitly like the sibling does.
+    env.set_controller_parameters()
+
+    logger.info("Moving to episode start qpos...")
+    env.arm.set_joint_positions(target_time=1.0, positions=np.asarray(start_qpos, dtype=float), wait=True)
+
+    if prompt:
+        input(f"\n  [{tag}] Episode {episode_idx} ({n_rows} rows at {control_fps:g} Hz) — press Enter to start...")
+    env.activate_compliance_control()
+
+    with tqdm.tqdm(total=n_rows, desc=f"Ep {episode_idx} ({tag})") as pbar:
+        result = run_dense_loop(env, table, action_type, control_fps=control_fps, demo_fps=demo_fps,
+                                sleep_fn=sleep_fn, on_tick=lambda i, row: pbar.update(1))
+
+    if result.force_violation:
+        logger.warning(f"Episode {episode_idx} [{tag}] ended early at tick {result.n_ticks} (force limit exceeded)")
+
+    env.move_to_home(timeout=5.0)
+    env.deactivate_compliance_control()
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -232,6 +296,10 @@ def main(cfg: DictConfig) -> None:
     realtime = bool(_select(cfg, "eval.realtime", default=not mock))
     prompt = bool(_select(cfg, "eval.prompt", default=True)) and not mock
     sibling_plot = bool(_select(cfg, "eval.sibling_plot", default=True))
+    comparison_mode = bool(_select(cfg, "eval.comparison", default=False))
+    comparison_action = str(_select(cfg, "eval.comparison_action", default="raw_actions"))
+    if comparison_action not in DENSE_REPLAY_ACTION_TYPES:
+        raise ValueError(f"+eval.comparison_action must be one of {DENSE_REPLAY_ACTION_TYPES}, got {comparison_action!r}")
 
     # ------------------------------------------------------------------
     # Dataset (same conventions as the sibling: subset load + row_offset)
@@ -263,11 +331,19 @@ def main(cfg: DictConfig) -> None:
     if source == "dataset" and "bspline_config" not in info:
         raise ValueError("source=dataset needs the stored action.bspline.* features "
                          "(run add_bspline_segments.py --write) — or use +eval.source=fit")
-    columns = episode_columns(source, fit_config, available=list(info["features"]))
+    features = list(info["features"])
+    # One table per episode carrying the union of what the spline replay reads
+    # and what the dense baseline commands; dense_action_columns raises with the
+    # missing names before anything touches the robot.
+    dense_columns = dense_action_columns(comparison_action, available=features) if comparison_mode else []
+    columns = episode_columns(source, fit_config, available=features, extra=dense_columns)
     logger.info(
         f"Dataset {repo_id}: {meta.total_episodes} episodes | replaying {start_episode} – {end_episode - 1} | "
         f"source={source} speeds={speeds} control_fps={control_fps:g} demo_fps={demo_fps:g} mock={mock}"
     )
+    if comparison_mode:
+        logger.info(f"Dense baseline enabled: action_type={comparison_action} (stride 1, {control_fps:g} Hz) "
+                    f"| columns {dense_columns}")
     logger.info(f"B-spline config: degree {fit_config.degree}, chunk_size {fit_config.chunk_size} "
                 f"({fit_config.rows} rows), ref_source {fit_config.ref_source}, relative_knots {fit_config.relative_knots}")
 
@@ -330,12 +406,44 @@ def main(cfg: DictConfig) -> None:
         for name in ("eef_pos", "force_norm", "gated_force", "label_ref_position", "label_force", "stiffness"):
             np.save(output_dir / f"ep{episode_idx}_dataset_{name}.npy", gt[name])
 
+        # The dense baseline runs first: it is the 1x reference every spline
+        # replay of this episode is compared against.
+        dense = None
+        sib_dense_result = None
+        if comparison_mode:
+            dense = replay_dense_on_env(env, table, comparison_action, control_fps=control_fps, demo_fps=demo_fps,
+                                        start_qpos=start_qpos, episode_idx=episode_idx, prompt=prompt,
+                                        sleep_fn=sleep_fn)
+            dense_comparison = compare_dense_with_dataset(dense, gt)
+            dense_text = dense_summary_text(episode_idx, dense, dense_comparison)
+            logger.info("\n" + dense_text)
+            (output_dir / f"ep{episode_idx}_{dense.label}_summary.txt").write_text(dense_text + "\n")
+            with open(output_dir / f"ep{episode_idx}_{dense.label}_summary.json", "w") as f:
+                json.dump(dense_comparison, f, indent=2)
+            if dense.clip_triggers:
+                (output_dir / f"ep{episode_idx}_{dense.label}_clips.txt").write_text("\n".join(dense.clip_triggers) + "\n")
+            save_result_arrays(output_dir, episode_idx, dense)
+            summaries[f"ep{episode_idx}_{dense.label}"] = dense_comparison
+            total_force_errors[dense.label] = (total_force_errors.get(dense.label, 0.0)
+                                               + dense_comparison.get("total_meas_force_err_N", 0.0))
+            if ds_gt_sibling is not None and dense.n_ticks:
+                sib_dense_result = sibling.ReplayResult(
+                    action_type=dense.label, eef_pos=dense.eef_pos, force_norm=dense.force_norm,
+                    torque_norm=dense.torque_norm, stiffness=dense.stiffness,
+                    force_violation=dense.force_violation, ds_indices=dense.ds_indices,
+                    stride=1, duration_s=dense.duration_s, clip_count=dense.clip_count,
+                )
+                sibling._log_replay_summary(episode_idx, sib_dense_result, ds_gt_sibling)
+
         for speed in speeds:
             playhead_cfg = _playhead_config(cfg, speed, demo_fps, control_fps)
             result = replay_curve_on_env(env, curve, playhead_cfg, start_qpos,
                                          episode_idx=episode_idx, prompt=prompt, sleep_fn=sleep_fn)
             comparison = compare_with_dataset(result, gt)
-            text = summary_text(episode_idx, result, comparison)
+            vs_dense = compare_with_dense(result, dense) if dense is not None else None
+            if vs_dense is not None:
+                comparison.update(vs_dense)
+            text = summary_text(episode_idx, result, comparison, vs_dense=vs_dense)
             logger.info("\n" + text)
             (output_dir / f"ep{episode_idx}_{result.label}_summary.txt").write_text(text + "\n")
             with open(output_dir / f"ep{episode_idx}_{result.label}_summary.json", "w") as f:
@@ -344,7 +452,7 @@ def main(cfg: DictConfig) -> None:
                 (output_dir / f"ep{episode_idx}_{result.label}_clips.txt").write_text("\n".join(result.clip_triggers) + "\n")
             save_result_arrays(output_dir, episode_idx, result)
             plot_spline_replay(episode_idx, gt, result, output_dir / f"ep{episode_idx}_{result.label}_spline_replay.png",
-                               comparison=comparison)
+                               comparison=comparison, dense=dense, vs_dense=vs_dense)
             summaries[f"ep{episode_idx}_{result.label}"] = comparison
             total_force_errors[result.label] = total_force_errors.get(result.label, 0.0) + comparison["total_meas_force_err_N"]
 
@@ -357,7 +465,8 @@ def main(cfg: DictConfig) -> None:
                     stride=1, duration_s=result.duration_s, clip_count=result.clip_count,
                 )
                 sibling._log_replay_summary(episode_idx, sib_result, ds_gt_sibling)
-                sibling.plot_episode_comparison(episode_idx, ds_gt_sibling, [sib_result],
+                sib_replays = [sib_result] if sib_dense_result is None else [sib_result, sib_dense_result]
+                sibling.plot_episode_comparison(episode_idx, ds_gt_sibling, sib_replays,
                                                 output_dir / f"ep{episode_idx}_{result.label}_comparison.png")
 
     if not mock:

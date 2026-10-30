@@ -20,6 +20,12 @@ exercised with a mock environment and under pytest:
 * **tick loop and records** (:func:`run_tick_loop`, :class:`SplineReplayResult`),
   the dataset ground truth on the demo time base, the comparison numbers and a
   compact matplotlib plot;
+* **dense baseline** (:func:`run_dense_loop`, :class:`DenseReplayResult`): the
+  same episode replayed row by row from the raw dataset commands, one row per
+  control tick, exactly like ``scripts/test_replay_episode.py`` does. It is the
+  1x reference the spline replay is compared against
+  (:func:`compare_with_dense`), and on its own it shows whether the *dataset
+  actions* still reproduce the recording in today's environment;
 * :class:`MockFDCCEnv`, a fake env with the surface the loop uses, tracking the
   commanded reference perfectly and measuring a zero wrench.
 
@@ -55,6 +61,11 @@ from comet.common.utils.bspline_utils import (
 )
 from comet.common.utils.vt_utils import process_factored_action_dict
 
+try:  # only needed by the mock's virtual_target_actions branch
+    from comet.common.utils.vt_utils import compute_directional_stiffness_diagonal
+except ImportError:  # pragma: no cover
+    compute_directional_stiffness_diagonal = None
+
 try:  # ROS-free sibling; missing only when this file is imported by path without the package
     from osx_ur5e.action_limits import limiter_from_safety_config
 except ImportError:  # pragma: no cover
@@ -66,12 +77,47 @@ SEGMENT_FEATURES: tuple[str, ...] = ("action.bspline.knots",) + tuple(f"action.b
 DENSE_ACTION_KEYS: tuple[str, ...] = tuple(f"action.{g}" for g in FCT_CHANNEL_GROUPS)
 CURVE_SOURCES: tuple[str, ...] = ("fit", "dataset")
 
+#: Action representations the dense (per-row) replay can command, the three
+#: dicts ``FDCCEnv.prepare_action`` understands (see its branches).
+DENSE_REPLAY_ACTION_TYPES: tuple[str, ...] = ("raw_actions", "factored_actions", "virtual_target_actions")
+
 OBS_EEF_POSITION = "observation.eef.position"
 OBS_EEF_ROTATION = "observation.eef.rotation_ortho6"
 OBS_QPOS = "observation.qpos"
 OBS_FT = "observation.ft"
 COL_CONTACT_FLAG = "action.contact_flag"
 COL_ESTIMATED_STIFFNESS = "action.estimated_stiffness"
+
+COL_RAW_POSITION = "action.position"
+COL_RAW_ROTATION = "action.rotation_ortho6"
+COL_RAW_STIFFNESS = "action.stiffness_diag"
+COL_VT_POSITION = "action.virtual_target_position"
+COL_VT_ROTATION = "action.virtual_target_rotation"
+COL_VT_STIFFNESS = "action.vt_estimated_stiffness"
+COL_VT_REF_POSITION = "action.vt_ref_position"
+COL_VT_REF_ROTATION = "action.vt_ref_rotation_ortho6"
+
+#: Columns every dense action type needs, mirroring ``test_replay_episode.build_env_action``.
+DENSE_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "raw_actions": (COL_RAW_POSITION, COL_RAW_ROTATION, COL_RAW_STIFFNESS),
+    "factored_actions": DENSE_ACTION_KEYS,
+    # the vt reference falls back to the observed eef pose when the dataset has
+    # no vt_ref_* columns (same fallback as the sibling), so those are required
+    "virtual_target_actions": (COL_VT_POSITION, COL_VT_ROTATION, COL_VT_STIFFNESS,
+                               OBS_EEF_POSITION, OBS_EEF_ROTATION),
+}
+#: Columns used when present, skipped otherwise.
+DENSE_OPTIONAL_COLUMNS: dict[str, tuple[str, ...]] = {
+    "raw_actions": (),
+    "factored_actions": (),
+    "virtual_target_actions": (COL_VT_REF_POSITION, COL_VT_REF_ROTATION),
+}
+#: The commanded position of a dense row, per action type.
+DENSE_COMMAND_POSITION_KEY: dict[str, str] = {
+    "raw_actions": COL_RAW_POSITION,
+    "factored_actions": "action.ref_position",
+    "virtual_target_actions": COL_VT_POSITION,
+}
 
 POS = FCT_CHANNEL_SLICES["ref_position"]
 ROT = FCT_CHANNEL_SLICES["ref_rotation_ortho6"]
@@ -118,14 +164,24 @@ def table_column(table: Any, key: str) -> np.ndarray:
     return out
 
 
-def episode_columns(source: str, config: BSplineFitConfig, available: Sequence[str] | None = None) -> list[str]:
-    """Dataset columns the replay reads for ``source`` (fit inputs, ground truth, stored segments)."""
+def episode_columns(
+    source: str,
+    config: BSplineFitConfig,
+    available: Sequence[str] | None = None,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    """Dataset columns the replay reads for ``source`` (fit inputs, ground truth, stored segments).
+
+    ``extra`` appends further columns (e.g. :func:`dense_action_columns`) so one
+    table can serve both the spline and the dense replay; duplicates are dropped.
+    """
     cols = list(required_columns(config.ref_source, config.force_source))
     for c in (OBS_EEF_POSITION, OBS_EEF_ROTATION, OBS_QPOS, OBS_FT, COL_CONTACT_FLAG, COL_ESTIMATED_STIFFNESS):
         if c not in cols:
             cols.append(c)
     if source == "dataset":
         cols += [f for f in SEGMENT_FEATURES if f not in cols]
+    cols += [c for c in (extra or ()) if c not in cols]
     if available is not None:
         missing = [c for c in cols if c not in available]
         if missing:
@@ -133,9 +189,55 @@ def episode_columns(source: str, config: BSplineFitConfig, available: Sequence[s
     return cols
 
 
-def episode_table_from_frames(frames: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> dict[str, np.ndarray]:
-    """Stack per-frame dicts (``LeRobotDataset[i]``) into ``{column: (T, ...) float array}``."""
-    return {c: np.stack([_as_float_array(f[c]) for f in frames]) for c in columns}
+def dense_action_columns(action_type: str, available: Sequence[str] | None = None) -> list[str]:
+    """Dataset columns the dense (per-row) replay of ``action_type`` reads.
+
+    The optional ``action.vt_ref_*`` columns are included only when ``available``
+    is unknown or lists them; a *required* column missing from ``available``
+    raises, so the caller fails before touching the robot.
+    """
+    if action_type not in DENSE_REPLAY_ACTION_TYPES:
+        raise ValueError(f"action_type must be one of {DENSE_REPLAY_ACTION_TYPES}, got {action_type!r}")
+    required = list(DENSE_REQUIRED_COLUMNS[action_type])
+    optional = list(DENSE_OPTIONAL_COLUMNS[action_type])
+    if available is None:
+        return required + optional
+    missing = [c for c in required if c not in available]
+    if missing:
+        raise KeyError(f"dataset lacks columns {missing} needed for the dense replay of {action_type!r}")
+    return required + [c for c in optional if c in available]
+
+
+def episode_table_from_frames(
+    frames: Sequence[Mapping[str, Any]],
+    columns: Sequence[str],
+    optional: Sequence[str] = (),
+) -> dict[str, np.ndarray]:
+    """Stack per-frame dicts (``LeRobotDataset[i]``) into ``{column: (T, ...) float array}``.
+
+    A column in ``optional`` that the frames do not carry is skipped instead of
+    raising (``table_column`` on the resulting table would raise ``KeyError``,
+    so callers must probe with :func:`has_column`).
+    """
+    keep = [c for c in columns if c not in optional or (frames and c in frames[0])]
+    return {c: np.stack([_as_float_array(f[c]) for f in frames]) for c in keep}
+
+
+def has_column(table: Any, key: str) -> bool:
+    """Whether ``table`` carries ``key`` (DataFrame, dict of arrays or frame mapping)."""
+    try:
+        table[key]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return True
+
+
+def _row_value(table: Any, key: str, i: int) -> np.ndarray:
+    """Row ``i`` of column ``key`` as a flat float array (fast path for stacked arrays)."""
+    col = table[key]
+    if isinstance(col, np.ndarray) and col.dtype != object and col.ndim >= 2:
+        return np.asarray(col[i], dtype=np.float64).reshape(-1)
+    return np.asarray(table_column(table, key)[i], dtype=np.float64).reshape(-1)
 
 
 def segment_matrices(table: Any) -> np.ndarray:
@@ -386,6 +488,49 @@ def curve_tick_action(curve: EpisodeCurve, u: float) -> tuple[np.ndarray, dict[s
     return projected, fct_to_env_action(projected)
 
 
+# ==================== Dataset row -> env action (the dense baseline) ====================
+
+
+def dense_row_action(table: Any, i: int, action_type: str) -> dict[str, np.ndarray]:
+    """Row ``i`` of ``table`` as the env action dict, mirroring ``test_replay_episode.build_env_action``.
+
+    ``raw_actions`` -> ``action.position`` / ``action.orientation`` (quaternion
+    from the stored ortho6) / ``action.stiffness_diag``; ``factored_actions`` ->
+    the seven dense FCT keys; ``virtual_target_actions`` -> the vt keys with the
+    ``vt_ref_*`` reference, falling back to the observed eef pose like the sibling.
+
+    The ortho6 -> quaternion conversion uses ``comet``'s
+    ``math_utils.quaternion_from_ortho6``; it is bit-identical to
+    ``ur_control.transformations.quaternion_from_ortho6`` (the one ``FDCCEnv``
+    itself uses, same ``[x, y, z, w]`` ordering) — both are
+    ``quaternion_from_matrix(rotation_matrix_from_ortho6(...))``, verified
+    numerically in ``tests/test_bspline_replay.py``.
+    """
+    if action_type not in DENSE_REPLAY_ACTION_TYPES:
+        raise ValueError(f"action_type must be one of {DENSE_REPLAY_ACTION_TYPES}, got {action_type!r}")
+    if action_type == "raw_actions":
+        return {
+            "action.position": _row_value(table, COL_RAW_POSITION, i),
+            "action.orientation": np.asarray(
+                mu.quaternion_from_ortho6(_row_value(table, COL_RAW_ROTATION, i)), dtype=np.float64),
+            "action.stiffness_diag": _row_value(table, COL_RAW_STIFFNESS, i),
+        }
+    if action_type == "factored_actions":
+        return {k: _row_value(table, k, i) for k in DENSE_ACTION_KEYS}
+    action = {
+        "action.virtual_target_position": _row_value(table, COL_VT_POSITION, i),
+        "action.virtual_target_rotation": _row_value(table, COL_VT_ROTATION, i),
+        "action.vt_estimated_stiffness": _row_value(table, COL_VT_STIFFNESS, i),
+    }
+    if has_column(table, COL_VT_REF_POSITION) and has_column(table, COL_VT_REF_ROTATION):
+        action["action.vt_ref_position"] = _row_value(table, COL_VT_REF_POSITION, i)
+        action["action.vt_ref_rotation_ortho6"] = _row_value(table, COL_VT_REF_ROTATION, i)
+    else:
+        action["action.vt_ref_position"] = _row_value(table, OBS_EEF_POSITION, i)
+        action["action.vt_ref_rotation_ortho6"] = _row_value(table, OBS_EEF_ROTATION, i)
+    return action
+
+
 # ==================== Records ====================
 
 
@@ -468,7 +613,75 @@ class SplineReplayResult:
         }
 
 
-def save_result_arrays(output_dir: Path, episode_idx: int, result: SplineReplayResult) -> list[Path]:
+@dataclass
+class DenseReplayResult:
+    """Everything recorded during one dense replay (one episode, one action type, 1x).
+
+    The per-row baseline the spline replay is measured against: one dataset row
+    per control tick, stride 1, so ``ds_indices`` is ``0 .. n-1`` unless a force
+    violation ended the replay early.
+    """
+
+    action_type: str
+    demo_fps: float
+    control_fps: float
+    ds_indices: np.ndarray             # (n,) dataset row relative to the episode start
+    command_pos: np.ndarray            # (n, 3) commanded position of that row
+    eef_pos: np.ndarray                # (n, 3)
+    eef_quat: np.ndarray               # (n, 4)
+    wrench: np.ndarray                 # (n, 6) measured after the step
+    stiffness: np.ndarray              # (n,) env.last_compliance_stiffness
+    clipped: np.ndarray                # (n,) bool, limiter clipped the step
+    clip_triggers: list[str] = field(default_factory=list)
+    tick_time: np.ndarray = field(default_factory=lambda: np.zeros(0))  # (n,) s since the first tick
+    force_violation: bool = False
+    duration_s: float = 0.0
+
+    @property
+    def label(self) -> str:
+        return self.action_type
+
+    @property
+    def n_ticks(self) -> int:
+        return int(len(self.ds_indices))
+
+    @property
+    def force_norm(self) -> np.ndarray:
+        return np.linalg.norm(self.wrench[:, :3], axis=1)
+
+    @property
+    def torque_norm(self) -> np.ndarray:
+        return np.linalg.norm(self.wrench[:, 3:], axis=1)
+
+    @property
+    def clip_count(self) -> int:
+        return int(np.count_nonzero(self.clipped))
+
+    @property
+    def demo_span_s(self) -> float:
+        """Demo time the executed rows cover."""
+        return float(self.ds_indices[-1] - self.ds_indices[0]) / self.demo_fps if self.n_ticks else 0.0
+
+    @property
+    def nominal_duration_s(self) -> float:
+        """Wall time the ticks take at ``control_fps`` (what a real-time loop spends)."""
+        return self.n_ticks / self.control_fps
+
+    @property
+    def achieved_speedup(self) -> float:
+        return self.demo_span_s / self.duration_s if self.duration_s > 0 else float("nan")
+
+    def arrays(self) -> dict[str, np.ndarray]:
+        """The per-tick arrays to save as npy."""
+        return {
+            "ds_indices": self.ds_indices, "command_pos": self.command_pos, "eef_pos": self.eef_pos,
+            "eef_quat": self.eef_quat, "wrench": self.wrench, "stiffness": self.stiffness,
+            "clipped": self.clipped, "tick_time": self.tick_time,
+        }
+
+
+def save_result_arrays(output_dir: Path, episode_idx: int, result: SplineReplayResult | DenseReplayResult) -> list[Path]:
+    """``ep<i>_<label>_<name>.npy`` for every array of a spline *or* dense result."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = []
@@ -561,6 +774,89 @@ def run_tick_loop(
     )
 
 
+def run_dense_loop(
+    env: Any,
+    table: Any,
+    action_type: str,
+    *,
+    control_fps: float,
+    demo_fps: float,
+    sleep_fn: Callable[[float], None] | None = None,
+    on_tick: Callable[[int, int], None] | None = None,
+) -> DenseReplayResult:
+    """Replay the dataset rows of ``table`` one per control tick (the 1x baseline).
+
+    The dense counterpart of :func:`run_tick_loop`: rows ``0 .. T-1`` in order,
+    stride 1, ``env.step(dense_row_action(...))``, then the pose, wrench,
+    ``last_compliance_stiffness`` and limiter triggers read *after* the step, so
+    the two replays record exactly the same quantities the same way. Stops early
+    on ``timestep.last()`` (force violation). ``sleep_fn`` keeps the loop at
+    ``control_fps``; ``None`` runs as fast as possible (mock mode).
+    """
+    if action_type not in DENSE_REPLAY_ACTION_TYPES:
+        raise ValueError(f"action_type must be one of {DENSE_REPLAY_ACTION_TYPES}, got {action_type!r}")
+    if control_fps <= 0 or demo_fps <= 0:
+        raise ValueError("control_fps and demo_fps must be > 0")
+    cmd_key = DENSE_COMMAND_POSITION_KEY[action_type]
+    # Stack the columns once: on a parquet DataFrame every ``table_column`` call
+    # re-stacks the whole column, which would make a per-row lookup quadratic.
+    stacked: dict[str, np.ndarray] = {c: table_column(table, c) for c in DENSE_REQUIRED_COLUMNS[action_type]}
+    for c in DENSE_OPTIONAL_COLUMNS[action_type]:
+        if has_column(table, c):
+            stacked[c] = table_column(table, c)
+    n_rows = int(len(stacked[cmd_key]))
+    dt = 1.0 / float(control_fps)
+
+    rec: dict[str, list] = {k: [] for k in ("ds_indices", "command_pos", "eef_pos", "eef_quat", "wrench", "stiffness", "clipped", "tick_time")}
+    triggers_log: list[str] = []
+    force_violation = False
+    t_start = time.perf_counter()
+    for i in range(n_rows):
+        tick_start = time.perf_counter()
+        env_action = dense_row_action(stacked, i, action_type)
+        timestep = env.step(env_action)
+
+        eef = np.asarray(env.arm.end_effector(), dtype=float).reshape(-1)
+        wrench = np.asarray(env.arm.get_wrench(), dtype=float).reshape(-1)
+        triggers = env.action_limiter.last_clip_triggers
+        clipped = bool(triggers["translation"] or triggers["orientation"])
+        if clipped:
+            triggers_log.append(f"tick {i} row={i}: {triggers}")
+
+        rec["ds_indices"].append(i)
+        rec["command_pos"].append(np.asarray(env_action[cmd_key], dtype=float).reshape(3))
+        rec["eef_pos"].append(eef[:3])
+        rec["eef_quat"].append(eef[3:7] if eef.size >= 7 else np.array([0.0, 0.0, 0.0, 1.0]))
+        rec["wrench"].append(wrench[:6])
+        rec["stiffness"].append(float(env.last_compliance_stiffness))
+        rec["clipped"].append(clipped)
+        rec["tick_time"].append(tick_start - t_start)
+        if on_tick is not None:
+            on_tick(i, i)
+
+        if timestep.last():
+            force_violation = True
+            break
+
+        if sleep_fn is not None:
+            remaining = dt - (time.perf_counter() - tick_start)
+            if remaining > 0:
+                sleep_fn(remaining)
+    duration_s = time.perf_counter() - t_start
+
+    return DenseReplayResult(
+        action_type=action_type, demo_fps=float(demo_fps), control_fps=float(control_fps),
+        ds_indices=np.asarray(rec["ds_indices"], dtype=int),
+        command_pos=np.asarray(rec["command_pos"], dtype=float).reshape(-1, 3),
+        eef_pos=np.asarray(rec["eef_pos"], dtype=float).reshape(-1, 3),
+        eef_quat=np.asarray(rec["eef_quat"], dtype=float).reshape(-1, 4),
+        wrench=np.asarray(rec["wrench"], dtype=float).reshape(-1, 6),
+        stiffness=np.asarray(rec["stiffness"], dtype=float), clipped=np.asarray(rec["clipped"], dtype=bool),
+        clip_triggers=triggers_log, tick_time=np.asarray(rec["tick_time"], dtype=float),
+        force_violation=force_violation, duration_s=duration_s,
+    )
+
+
 # ==================== Dataset ground truth and comparison ====================
 
 
@@ -634,7 +930,118 @@ def compare_with_dataset(result: SplineReplayResult, gt: Mapping[str, np.ndarray
     }
 
 
-def summary_text(episode_idx: int, result: SplineReplayResult, comparison: Mapping[str, float]) -> str:
+def compare_dense_with_dataset(result: DenseReplayResult, gt: Mapping[str, np.ndarray]) -> dict[str, float]:
+    """Per-replay metrics of the dense baseline against the dataset it was recorded from.
+
+    ``mean_pos_err_vs_command_m`` is the controller's tracking error (eef vs the
+    position the row commanded); ``*_vs_obs_m`` is the drift from the recorded
+    eef path, i.e. how far the *dataset actions themselves* now land from the
+    demonstration. ``total_meas_force_err_N`` uses the gated demo ``|F|``, the
+    same quantity :func:`compare_with_dataset` totals for the spline replay.
+    """
+    n = int(gt["n_frames"])
+    if result.n_ticks == 0:
+        return {"n_ticks": 0}
+    idx = np.clip(result.ds_indices, 0, n - 1)
+    pos_err_cmd = np.linalg.norm(result.eef_pos - result.command_pos, axis=1)
+    pos_err_obs = np.linalg.norm(result.eef_pos - gt["eef_pos"][idx], axis=1)
+    meas_force_err = result.force_norm - gt["gated_force"][idx]
+    meas_force_err_raw = result.force_norm - gt["force_norm"][idx]
+    stiff_err = result.stiffness - gt["stiffness"][idx]
+    return {
+        "n_ticks": float(result.n_ticks),
+        "duration_s": float(result.duration_s),
+        "nominal_duration_s": float(result.nominal_duration_s),
+        "demo_span_s": float(result.demo_span_s),
+        "achieved_speedup": float(result.achieved_speedup),
+        "clip_count": float(result.clip_count),
+        "force_violation": float(result.force_violation),
+        "mean_pos_err_vs_command_m": float(pos_err_cmd.mean()),
+        "max_pos_err_vs_command_m": float(pos_err_cmd.max()),
+        "mean_pos_err_vs_obs_m": float(pos_err_obs.mean()),
+        "max_pos_err_vs_obs_m": float(pos_err_obs.max()),
+        "mean_meas_force_err_N": float(np.abs(meas_force_err).mean()),
+        "max_meas_force_err_N": float(np.abs(meas_force_err).max()),
+        "mean_meas_force_err_raw_N": float(np.abs(meas_force_err_raw).mean()),
+        "max_meas_force_err_raw_N": float(np.abs(meas_force_err_raw).max()),
+        "total_meas_force_err_N": float(np.abs(meas_force_err).sum()),
+        "mean_stiffness_err": float(np.abs(stiff_err).mean()),
+    }
+
+
+def pair_spline_with_dense(
+    spline_result: SplineReplayResult, dense_result: DenseReplayResult
+) -> tuple[np.ndarray, np.ndarray]:
+    """Tick indices of the two replays that sit on the same dataset frame.
+
+    The shared time base is the demo frame: a spline tick at curve parameter
+    ``u`` belongs to frame ``round(u)``, a dense tick to the row it commanded.
+    Spline ticks whose frame the dense replay never reached (it ended early on a
+    force violation) are dropped. Returns ``(spline_idx, dense_idx)``.
+    """
+    if spline_result.n_ticks == 0 or dense_result.n_ticks == 0:
+        return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+    where = {int(f): k for k, f in enumerate(dense_result.ds_indices)}
+    pairs = [(t, where[int(f)]) for t, f in enumerate(spline_result.ds_indices) if int(f) in where]
+    if not pairs:
+        return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+    spline_idx, dense_idx = zip(*pairs)
+    return np.asarray(spline_idx, dtype=int), np.asarray(dense_idx, dtype=int)
+
+
+def compare_with_dense(spline_result: SplineReplayResult, dense_result: DenseReplayResult) -> dict[str, float]:
+    """Spline replay vs the dense baseline, paired on the dataset frame (see :func:`pair_spline_with_dense`).
+
+    ``mean_cmd_pos_err_vs_dense_m`` compares the two *commands* (the spline's
+    projected ``ref_position`` against the dense row's commanded position); it
+    only means "same reference" for ``factored_actions``, for the other types
+    the dense command lives in a different frame — reported regardless.
+    """
+    si, di = pair_spline_with_dense(spline_result, dense_result)
+    if len(si) == 0:
+        return {"n_paired": 0}
+    pos_err = np.linalg.norm(spline_result.eef_pos[si] - dense_result.eef_pos[di], axis=1)
+    force_err = spline_result.force_norm[si] - dense_result.force_norm[di]
+    stiff_err = spline_result.stiffness[si] - dense_result.stiffness[di]
+    cmd_pos_err = np.linalg.norm(spline_result.command[si][:, POS] - dense_result.command_pos[di], axis=1)
+    return {
+        "n_paired": float(len(si)),
+        "mean_pos_err_vs_dense_m": float(pos_err.mean()),
+        "max_pos_err_vs_dense_m": float(pos_err.max()),
+        "mean_meas_force_err_vs_dense_N": float(np.abs(force_err).mean()),
+        "max_meas_force_err_vs_dense_N": float(np.abs(force_err).max()),
+        "total_meas_force_err_vs_dense_N": float(np.abs(force_err).sum()),
+        "mean_stiffness_err_vs_dense": float(np.abs(stiff_err).mean()),
+        "mean_cmd_pos_err_vs_dense_m": float(cmd_pos_err.mean()),
+    }
+
+
+def dense_summary_text(episode_idx: int, result: DenseReplayResult, comparison: Mapping[str, float]) -> str:
+    c = comparison
+    if not c.get("n_ticks"):
+        return f"[{result.label}] episode {episode_idx}: no ticks recorded"
+    return "\n".join([
+        f"[{result.label}] episode {episode_idx}: {int(c['n_ticks'])} dataset rows at {result.control_fps:g} Hz "
+        f"(stride 1, {c['demo_span_s']:.2f} s of demo)",
+        f"  duration: {c['duration_s']:.2f} s wall (nominal {c['nominal_duration_s']:.2f} s at control rate) | "
+        f"achieved speedup {c['achieved_speedup']:.2f}x",
+        f"  limiter clipped {int(c['clip_count'])} ticks | force violation: {bool(c['force_violation'])}",
+        f"  position error vs commanded position (tracking): mean {c['mean_pos_err_vs_command_m'] * 1e3:.2f} mm, "
+        f"max {c['max_pos_err_vs_command_m'] * 1e3:.2f} mm | vs demonstrated eef: "
+        f"mean {c['mean_pos_err_vs_obs_m'] * 1e3:.2f} mm, max {c['max_pos_err_vs_obs_m'] * 1e3:.2f} mm",
+        f"  measured |F| vs gated demo |F|: mean {c['mean_meas_force_err_N']:.2f} N, "
+        f"max {c['max_meas_force_err_N']:.2f} N, total {c['total_meas_force_err_N']:.1f} N | vs raw demo |F|: "
+        f"mean {c['mean_meas_force_err_raw_N']:.2f} N, max {c['max_meas_force_err_raw_N']:.2f} N",
+        f"  stiffness error mean {c['mean_stiffness_err']:.1f} N/m",
+    ])
+
+
+def summary_text(
+    episode_idx: int,
+    result: SplineReplayResult,
+    comparison: Mapping[str, float],
+    vs_dense: Mapping[str, float] | None = None,
+) -> str:
     c = comparison
     lines = [
         f"[{result.label}] episode {episode_idx}: {c['n_ticks']} ticks at {result.control_fps:g} Hz "
@@ -654,6 +1061,18 @@ def summary_text(episode_idx: int, result: SplineReplayResult, comparison: Mappi
         f"  measured |F| vs gated demo |F|: mean {c['mean_meas_force_err_N']:.2f} N, total {c['total_meas_force_err_N']:.1f} N | "
         f"stiffness error mean {c['mean_stiffness_err']:.1f} N/m",
     ]
+    if vs_dense is not None:
+        d = vs_dense
+        if d.get("n_paired"):
+            lines.append(
+                f"  vs dense replay ({int(d['n_paired'])} paired ticks): pos err mean "
+                f"{d['mean_pos_err_vs_dense_m'] * 1e3:.2f} mm, max {d['max_pos_err_vs_dense_m'] * 1e3:.2f} mm | "
+                f"measured |F| err mean {d['mean_meas_force_err_vs_dense_N']:.2f} N, "
+                f"total {d['total_meas_force_err_vs_dense_N']:.1f} N | "
+                f"stiffness err {d['mean_stiffness_err_vs_dense']:.1f} N/m"
+            )
+        else:
+            lines.append("  vs dense replay: no ticks paired on a common dataset frame")
     return "\n".join(lines)
 
 
@@ -666,8 +1085,16 @@ def plot_spline_replay(
     result: SplineReplayResult,
     save_path: Path,
     comparison: Mapping[str, float] | None = None,
+    dense: DenseReplayResult | None = None,
+    vs_dense: Mapping[str, float] | None = None,
 ) -> Path:
-    """Dataset vs replay on the demo time base (x = dataset frame ``round(u)``)."""
+    """Dataset vs replay on the demo time base (x = dataset frame ``round(u)``).
+
+    With ``dense`` the per-row baseline replay is overlaid on the same time base
+    (x = its dataset rows, dash-dotted) so the figure answers both questions at
+    once: how far the raw dataset actions drift from the recording, and how the
+    spline replay compares against them rather than only against the dataset.
+    """
     import matplotlib
     if not matplotlib.get_backend().lower().startswith("agg") and not _display_available():
         matplotlib.use("Agg")
@@ -680,6 +1107,15 @@ def plot_spline_replay(
     axis_labels = ["X", "Y", "Z"]
     ds_colors = ["tab:cyan", "tab:red", "tab:olive"]
     rp_colors = ["tab:blue", "tab:orange", "tab:green"]
+    dn_colors = ["tab:purple", "tab:pink", "tab:brown"]
+
+    # dense overlay on the shared demo time base, paired tick-by-tick with the spline replay
+    dn_x = dn_idx = None
+    pair_s = pair_d = np.zeros(0, dtype=int)
+    if dense is not None and dense.n_ticks:
+        dn_x = dense.ds_indices
+        dn_idx = np.clip(dn_x, 0, n - 1)
+        pair_s, pair_d = pair_spline_with_dense(result, dense)
 
     fig, axes = plt.subplots(6, 1, figsize=(13, 20), sharex=True)
     fig.subplots_adjust(hspace=0.35, top=0.965)
@@ -689,9 +1125,15 @@ def plot_spline_replay(
         ax.plot(steps, gt["eef_pos"][:, i], color=ds_colors[i], linestyle="--", linewidth=0.8, label=f"{lbl} dataset eef")
         ax.plot(steps, gt["label_ref_position"][:, i], color=ds_colors[i], linestyle=":", linewidth=0.8, label=f"{lbl} fitted reference")
         ax.plot(x, result.eef_pos[:, i], color=rp_colors[i], linewidth=0.9, label=f"{lbl} replay eef")
-    ax.set_title(f"Episode {episode_idx} [{result.label}] — EEF position (m)")
+        if dn_x is not None:
+            ax.plot(dn_x, dense.eef_pos[:, i], color=dn_colors[i], linestyle="-.", linewidth=0.9,
+                    alpha=0.85, label=f"{lbl} dense {dense.label} eef")
+    title = f"Episode {episode_idx} [{result.label}] — EEF position (m)"
+    if dense is not None:
+        title += f" vs dense [{dense.label}]"
+    ax.set_title(title)
     ax.set_ylabel("m")
-    ax.legend(ncol=3, fontsize=6, loc="upper right")
+    ax.legend(ncol=4 if dn_x is not None else 3, fontsize=6, loc="upper right")
     ax.grid(True, linewidth=0.4)
 
     ax = axes[1]
@@ -701,9 +1143,15 @@ def plot_spline_replay(
             linewidth=0.9, label="|replay eef − fitted reference at round(u)|")
     ax.plot(x, np.linalg.norm(result.eef_pos - gt["eef_pos"][idx], axis=1) * 1e3, color="tab:brown",
             linewidth=0.9, alpha=0.8, label="|replay eef − dataset eef|")
+    if dn_x is not None:
+        ax.plot(dn_x, np.linalg.norm(dense.eef_pos - gt["eef_pos"][dn_idx], axis=1) * 1e3, color="tab:pink",
+                linestyle="-.", linewidth=0.9, label=f"|dense {dense.label} eef − dataset eef|")
+        if len(pair_s):
+            ax.plot(x[pair_s], np.linalg.norm(result.eef_pos[pair_s] - dense.eef_pos[pair_d], axis=1) * 1e3,
+                    color="tab:olive", linewidth=0.9, alpha=0.9, label="|spline eef − dense eef|")
     ax.set_title("Position error (mm)")
     ax.set_ylabel("mm")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=6 if dn_x is not None else 7, ncol=2 if dn_x is not None else 1)
     ax.grid(True, linewidth=0.4)
 
     ax = axes[2]
@@ -712,6 +1160,9 @@ def plot_spline_replay(
     ax.plot(steps, gt["label_force"], color="black", linestyle=":", linewidth=0.9, label="fit label (filtered)")
     ax.plot(x, result.commanded_force, color="tab:blue", linewidth=0.9, label="commanded normal_force")
     ax.plot(x, result.force_norm, color="tab:red", linewidth=0.9, alpha=0.85, label="replay measured |F|")
+    if dn_x is not None:
+        ax.plot(dn_x, dense.force_norm, color="tab:purple", linestyle="-.", linewidth=0.9, alpha=0.85,
+                label=f"dense {dense.label} measured |F|")
     ax.set_title("Normal force (N)")
     ax.set_ylabel("N")
     ax.set_ylim(bottom=0)
@@ -721,19 +1172,28 @@ def plot_spline_replay(
     ax = axes[3]
     ax.plot(x, result.commanded_force - gt["gated_force"][idx], color="tab:blue", linewidth=0.9, label="commanded − gated dataset")
     ax.plot(x, result.force_norm - gt["gated_force"][idx], color="tab:red", linewidth=0.9, alpha=0.85, label="measured − gated dataset")
+    if dn_x is not None:
+        ax.plot(dn_x, dense.force_norm - gt["gated_force"][dn_idx], color="tab:purple", linestyle="-.",
+                linewidth=0.9, alpha=0.85, label=f"dense {dense.label} measured − gated dataset")
+        if len(pair_s):
+            ax.plot(x[pair_s], result.force_norm[pair_s] - dense.force_norm[pair_d], color="tab:olive",
+                    linewidth=0.9, alpha=0.9, label="spline measured − dense measured")
     ax.axhline(0, color="black", linewidth=0.5, linestyle=":")
     ax.set_title("Force difference (N)")
     ax.set_ylabel("ΔN")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=6 if dn_x is not None else 7, ncol=2 if dn_x is not None else 1)
     ax.grid(True, linewidth=0.4)
 
     ax = axes[4]
     ax.plot(steps, gt["stiffness"], color="tab:grey", linestyle="--", linewidth=0.9, label="dataset estimated_stiffness")
     ax.plot(x, result.commanded_stiffness, color="tab:green", linewidth=0.9, label="commanded")
     ax.plot(x, result.stiffness, color="tab:olive", linewidth=0.8, alpha=0.7, label="env.last_compliance_stiffness")
+    if dn_x is not None:
+        ax.plot(dn_x, dense.stiffness, color="tab:purple", linestyle="-.", linewidth=0.9, alpha=0.85,
+                label=f"dense {dense.label} env.last_compliance_stiffness")
     ax.set_title("Stiffness (N/m)")
     ax.set_ylabel("N/m")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=6 if dn_x is not None else 7, ncol=2 if dn_x is not None else 1)
     ax.grid(True, linewidth=0.4)
 
     ax = axes[5]
@@ -748,13 +1208,28 @@ def plot_spline_replay(
     ax.grid(True, linewidth=0.4)
 
     if comparison is not None:
-        fig.suptitle(
+        title = (
             f"{result.label}: {comparison['n_ticks']} ticks, nominal {comparison['nominal_speedup']:.2f}x, "
             f"tracking err {comparison['mean_pos_err_vs_command_m'] * 1e3:.2f} mm, "
             f"pos err vs fitted reference {comparison['mean_pos_err_vs_label_m'] * 1e3:.2f} mm, "
-            f"cmd force err {comparison['mean_cmd_force_err_vs_gated_N']:.2f} N, clipped {comparison['clip_count']}",
-            fontsize=10,
+            f"cmd force err {comparison['mean_cmd_force_err_vs_gated_N']:.2f} N, clipped {comparison['clip_count']}"
         )
+        if vs_dense is not None and vs_dense.get("n_paired"):
+            title += (
+                f"\nvs dense [{dense.label if dense is not None else 'dense'}] "
+                f"({int(vs_dense['n_paired'])} paired): pos err mean "
+                f"{vs_dense['mean_pos_err_vs_dense_m'] * 1e3:.2f} mm / max "
+                f"{vs_dense['max_pos_err_vs_dense_m'] * 1e3:.2f} mm, measured |F| err mean "
+                f"{vs_dense['mean_meas_force_err_vs_dense_N']:.2f} N / total "
+                f"{vs_dense['total_meas_force_err_vs_dense_N']:.1f} N, stiffness err "
+                f"{vs_dense['mean_stiffness_err_vs_dense']:.1f} N/m"
+            )
+        if "\n" in title:
+            # two-line suptitle: give it its own band so it clears the first panel
+            fig.subplots_adjust(top=0.94)
+            fig.suptitle(title, fontsize=10, y=0.995, va="top")
+        else:
+            fig.suptitle(title, fontsize=10)
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=130, bbox_inches="tight")
@@ -825,13 +1300,16 @@ class MockArm:
 class MockFDCCEnv:
     """FDCCEnv stand-in for running the spline replay without ROS.
 
-    ``step`` validates the dense FCT keys, runs the real
-    ``process_factored_action_dict`` (virtual target + 6x6 stiffness, as
-    ``FDCCEnv.prepare_action`` does), feeds the virtual-target delta through the
-    real ``DeltaActionLimiter`` built from ``safety_parameters`` (so the clip
-    count is the one the robot would see at this control rate) and then moves
-    the arm *exactly* to the commanded reference pose: no surface, no spring,
-    zero wrench. Method calls are logged in ``calls``.
+    ``step`` dispatches on the action dict exactly like
+    ``FDCCEnv.prepare_action``: the dense FCT keys (``factored_actions``), the
+    ``action.virtual_target_*`` keys (``virtual_target_actions``) or
+    ``action.position`` + ``action.orientation`` (``raw_actions``). Each branch
+    runs the real conversion (``process_factored_action_dict`` /
+    ``compute_directional_stiffness_diagonal`` / pass-through), feeds the delta
+    to the commanded pose through the real ``DeltaActionLimiter`` built from
+    ``safety_parameters`` (so the clip count is the one the robot would see at
+    this control rate) and then moves the arm *exactly* to the commanded pose:
+    no surface, no spring, zero wrench. Method calls are logged in ``calls``.
     """
 
     def __init__(
@@ -891,6 +1369,32 @@ class MockFDCCEnv:
 
     # -- the step --
     def step(self, action: Mapping[str, Any]) -> MockTimeStep:
+        """Dispatch on the action dict the way ``FDCCEnv.prepare_action`` does."""
+        if "action.contact_direction" in action:                     # factored_actions (FCT)
+            return self._step_factored(action)
+        if "action.virtual_target_position" in action:               # virtual_target_actions
+            return self._step_virtual_target(action)
+        if "action.position" in action and "action.orientation" in action:   # raw_actions
+            return self._step_raw(action)
+        raise KeyError(f"mock env: unsupported action dict with keys {sorted(action)}")
+
+    def _apply(self, action: Mapping[str, Any], controller_action: Mapping[str, Any],
+               move_position, move_ortho6) -> MockTimeStep:
+        """Limiter on the delta to the controller target, then jump to the commanded pose."""
+        current = self.arm.end_effector()
+        target_pos = np.asarray(controller_action["action.position"], dtype=float).reshape(3)
+        target_quat = np.asarray(controller_action["action.orientation"], dtype=float).reshape(4)
+        delta_t = target_pos - current[:3]
+        delta_r = (Rotation.from_quat(target_quat) * Rotation.from_quat(current[3:7]).inv()).as_rotvec()
+        self.action_limiter.clip(delta_t, delta_r, self.dt)
+
+        self.arm.position = np.asarray(move_position, dtype=float).reshape(3).copy()
+        self.arm.ortho6 = np.asarray(move_ortho6, dtype=float).reshape(6).copy()
+        self.actions.append({k: np.array(v, dtype=float) for k, v in action.items()})
+        self.controller_actions.append(dict(controller_action))
+        return MockTimeStep(MockTimeStep.STEP_MID)
+
+    def _step_factored(self, action: Mapping[str, Any]) -> MockTimeStep:
         missing = [k for k in DENSE_ACTION_KEYS if k not in action]
         if missing:
             raise KeyError(f"mock env: dense FCT action lacks {missing}")
@@ -904,15 +1408,51 @@ class MockFDCCEnv:
             orientation_representation="quaternion",
             full_stiffness_matrix=True,
         )
-        current = self.arm.end_effector()
-        target_pos = np.asarray(controller_action["action.position"], dtype=float).reshape(3)
-        target_quat = np.asarray(controller_action["action.orientation"], dtype=float).reshape(4)
-        delta_t = target_pos - current[:3]
-        delta_r = (Rotation.from_quat(target_quat) * Rotation.from_quat(current[3:7]).inv()).as_rotvec()
-        self.action_limiter.clip(delta_t, delta_r, self.dt)
+        return self._apply(action, controller_action,
+                           action["action.ref_position"], action["action.ref_rotation_ortho6"])
 
-        self.arm.position = np.asarray(action["action.ref_position"], dtype=float).reshape(3).copy()
-        self.arm.ortho6 = np.asarray(action["action.ref_rotation_ortho6"], dtype=float).reshape(6).copy()
-        self.actions.append({k: np.array(v, dtype=float) for k, v in action.items()})
-        self.controller_actions.append(controller_action)
-        return MockTimeStep(MockTimeStep.STEP_MID)
+    def _step_raw(self, action: Mapping[str, Any]) -> MockTimeStep:
+        """``raw_actions``: the recorded pose command straight through (``prepare_action`` passes it on)."""
+        if "action.stiffness_diag" not in action:
+            raise KeyError("mock env: raw action lacks ['action.stiffness_diag']")
+        self.last_compliance_stiffness = float(np.asarray(action["action.stiffness_diag"]).reshape(-1)[0])
+        controller_action = dict(action)
+        quat = np.asarray(action["action.orientation"], dtype=float).reshape(4)
+        return self._apply(action, controller_action, action["action.position"], mu.ortho6_from_quaternion(quat))
+
+    def _step_virtual_target(self, action: Mapping[str, Any]) -> MockTimeStep:
+        """``virtual_target_actions``: the directional-stiffness branch of ``prepare_action``."""
+        if compute_directional_stiffness_diagonal is None:  # pragma: no cover
+            raise NotImplementedError(
+                "mock env: virtual_target_actions needs comet.common.utils.vt_utils."
+                "compute_directional_stiffness_diagonal, which is not importable here"
+            )
+        missing = [k for k in ("action.virtual_target_rotation", "action.vt_estimated_stiffness") if k not in action]
+        if missing:
+            raise KeyError(f"mock env: virtual target action lacks {missing}")
+        vt_pos = np.asarray(action["action.virtual_target_position"], dtype=float).reshape(3)
+        vt_rot6 = np.asarray(action["action.virtual_target_rotation"], dtype=float).reshape(6)
+        stiffness_val = float(np.asarray(action["action.vt_estimated_stiffness"]).reshape(-1)[0])
+        self.last_compliance_stiffness = stiffness_val
+        if "action.vt_ref_position" in action:
+            ref_position = np.asarray(action["action.vt_ref_position"], dtype=float).reshape(3)
+            ref_rot6 = np.asarray(action["action.vt_ref_rotation_ortho6"], dtype=float).reshape(6)
+        else:
+            current = self.arm.end_effector()
+            ref_position = current[:3]
+            ref_rot6 = mu.ortho6_from_quaternion(current[3:7])
+        controller_action = {
+            "action.position": vt_pos,
+            "action.orientation": np.asarray(mu.quaternion_from_ortho6(vt_rot6), dtype=float),
+            "action.stiffness_diag": compute_directional_stiffness_diagonal(
+                position=ref_position,
+                virtual_target_position=vt_pos,
+                estimated_stiffness=stiffness_val,
+                default_stiffness=self.default_stiffness,
+                default_stiffness_rot=self.default_stiffness,
+                rotation_ortho6=ref_rot6,
+                virtual_target_rotation_ortho6=vt_rot6,
+                full_stiffness_matrix=True,
+            ),
+        }
+        return self._apply(action, controller_action, vt_pos, vt_rot6)
