@@ -38,6 +38,12 @@
          value="$(arg wrist_camera_gain)"/>
   <param name="$(arg camera_name)/rgb_camera/brightness"
          value="$(arg wrist_camera_brightness)"/>
+  <arg name="wrist_camera_contrast"	default="50"/>
+  <arg name="wrist_camera_gamma"	default="300"/>
+  <param name="$(arg camera_name)/rgb_camera/contrast"
+         value="$(arg wrist_camera_contrast)"/>
+  <param name="$(arg camera_name)/rgb_camera/gamma"
+         value="$(arg wrist_camera_gamma)"/>
 
   <!-- Auto-exposure metering window, in pixels of the 640x480 colour frame:
        left/right are columns (0..639), top/bottom are rows (0..479). The
@@ -109,13 +115,20 @@
          value="$(arg front_camera_gain)"/>
   <param name="$(arg camera_name2)/rgb_camera/brightness"
          value="$(arg front_camera_brightness)"/>
+  <!-- Contrast 25 (default 50): lifts the shadows, also lowers the highlights a little. -->
+  <arg name="front_camera_contrast"	default="25"/>
+  <arg name="front_camera_gamma"	default="300"/>
+  <param name="$(arg camera_name2)/rgb_camera/contrast"
+         value="$(arg front_camera_contrast)"/>
+  <param name="$(arg camera_name2)/rgb_camera/gamma"
+         value="$(arg front_camera_gamma)"/>
 
-  <!-- Front camera meters on the workspace only: columns 160..480, lower half
-       of the frame (rows 240..479). See the wrist camera block above. -->
-  <arg name="front_ae_roi_left"	default="160"/>
-  <arg name="front_ae_roi_right"	default="480"/>
-  <arg name="front_ae_roi_top"	default="240"/>
-  <arg name="front_ae_roi_bottom"	default="479"/>
+  <!-- Front camera meters on the tray: columns 40..600, rows 205..365 (camera_bringup.launch:
+       columns 160..480, rows 240..479, the lower half of the frame). See the wrist camera block above. -->
+  <arg name="front_ae_roi_left"	default="40"/>
+  <arg name="front_ae_roi_right"	default="600"/>
+  <arg name="front_ae_roi_top"	default="205"/>
+  <arg name="front_ae_roi_bottom"	default="365"/>
 
   <param name="$(arg camera_name2)/rgb_camera/auto_exposure_roi/left"
          value="$(arg front_ae_roi_left)"/>
