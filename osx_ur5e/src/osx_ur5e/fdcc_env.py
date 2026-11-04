@@ -312,6 +312,15 @@ class FDCCEnv(BaseEnv):
                 "action.orientation": vt_quat,
                 "action.stiffness_diag": stiffness_matrix,
             }
+            if self.explicit_wrench and self.explicit_force_source == "external":
+                # extra setpoint on top of the unchanged VT command: the fixed
+                # target along the VT offset (a zero offset sends no wrench)
+                offset = np.asarray(vt_pos, dtype=float) - np.asarray(ref_position, dtype=float)
+                offset_norm = np.linalg.norm(offset)
+                direction = offset / offset_norm if offset_norm > 1e-8 else np.zeros(3)
+                force = np.clip(self.explicit_external_target_force,
+                                -self.explicit_max_force, self.explicit_max_force)
+                controller_action["action.target_wrench"] = np.concatenate([force * direction, np.zeros(3)])
         elif "action.position" in action and "action.orientation" in action:  # raw_actions mode
             self.last_compliance_stiffness = action["action.stiffness_diag"][0]
             controller_action = action

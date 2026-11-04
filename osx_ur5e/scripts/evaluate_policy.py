@@ -34,6 +34,9 @@ Usage:
     python evaluate_policy.py eval.explicit_wrench.enabled=true \
         eval.explicit_wrench.force_source=external eval.explicit_wrench.external_target_force=25
 
+    # VT: same external command; the VT action is sent unchanged and the target
+    # is added as a wrench along VT - vt_ref (force_source=external only).
+
     # On-demand force via ROS topic (external mode):
     rostopic pub /comet/target_force std_msgs/Float32 "data: 25.0" -r 5
 
@@ -59,8 +62,8 @@ from omegaconf import DictConfig, OmegaConf
 
 from comet.eval import RealRobotEvalRunner, build_policy_adapter
 from comet.eval.force_layer_hooks import (
-    assert_factored_actions_for_explicit_wrench,
     resolve_explicit_wrench_config,
+    resolve_explicit_wrench_representation,
 )
 from comet.eval.io import install_sigint_handler, start_stop_listener
 from osx_ur5e.fdcc_env import FDCCEnv
@@ -103,8 +106,12 @@ def main(cfg: DictConfig) -> None:
 
         explicit_wrench = resolve_explicit_wrench_config(cfg)
         if explicit_wrench is not None:
-            assert_factored_actions_for_explicit_wrench(adapter.action_keys)
+            representation = resolve_explicit_wrench_representation(
+                adapter.action_keys, explicit_wrench["force_source"])
             env.set_explicit_wrench(True, **explicit_wrench)
+            if representation == "vt":
+                rospy.loginfo("VT checkpoint: commanding the VT action unchanged, plus the external "
+                              "target along VT - vt_ref (no intent gate, no torque)")
 
         rollout_recorder = None
         if OmegaConf.select(cfg, "eval.record_rosbag", default=False):
