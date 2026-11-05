@@ -92,6 +92,28 @@ def stamp_of(msg, fallback: float) -> float:
     return stamp if stamp > 0.0 else fallback
 
 
+def resolve_image_topic(cam_name: str, wait_s: float = 2.0) -> str:
+    """RealSense vs usb_cam topic layout, raw per-camera topics only."""
+    import rospy
+
+    candidates = [
+        f"/{cam_name}/color/image_raw",
+        f"/{cam_name}/image_raw",
+    ]
+    deadline = rospy.get_time() + wait_s
+    while not rospy.is_shutdown():
+        published = {t for t, _ in rospy.get_published_topics()}
+        for topic in candidates:
+            if topic in published:
+                return topic
+        if rospy.get_time() >= deadline:
+            break
+        rospy.sleep(0.1)
+    rospy.logwarn("resolve_image_topic: no image topic found for %s; defaulting to %s",
+                  cam_name, candidates[0])
+    return candidates[0]
+
+
 # ---------------------------------------------------------------------------
 # Online feeder
 # ---------------------------------------------------------------------------
@@ -165,24 +187,7 @@ class RosSampleFeeder:
         return "/wrench/filtered" if "/wrench/filtered" in published else "/wrench"
 
     def _resolve_image_topic(self, cam_name: str, wait_s: float = 2.0) -> str:
-        """RealSense vs usb_cam topic layout, raw per-camera topics only."""
-        rospy = self._rospy
-        candidates = [
-            f"/{cam_name}/color/image_raw",
-            f"/{cam_name}/image_raw",
-        ]
-        deadline = rospy.get_time() + wait_s
-        while not rospy.is_shutdown():
-            published = self._published_topics()
-            for topic in candidates:
-                if topic in published:
-                    return topic
-            if rospy.get_time() >= deadline:
-                break
-            rospy.sleep(0.1)
-        rospy.logwarn("RosSampleFeeder: no image topic found for %s; defaulting to %s",
-                      cam_name, candidates[0])
-        return candidates[0]
+        return resolve_image_topic(cam_name, wait_s)
 
     # -- caching ------------------------------------------------------------
 
