@@ -25,6 +25,8 @@ HOME_POSITION_TOLERANCE = 0.01  # m
 HOME_ORIENTATION_TOLERANCE = 0.05  # rad, per axis
 HOME_STALL_TIME = 2.0  # s without the pose error shrinking before giving up
 HOME_MIN_PROGRESS = 0.01  # improvement in normalized error that counts as progress
+# m, below this a raw action's offset from the measured pose sends no external wrench
+RAW_EXPLICIT_WRENCH_MIN_OFFSET = 1e-3
 
 
 class FDCCEnv(BaseEnv):
@@ -316,17 +318,30 @@ class FDCCEnv(BaseEnv):
                 # extra setpoint on top of the unchanged VT command: the fixed
                 # target along the VT offset (a zero offset sends no wrench)
                 offset = np.asarray(vt_pos, dtype=float) - np.asarray(ref_position, dtype=float)
-                offset_norm = np.linalg.norm(offset)
-                direction = offset / offset_norm if offset_norm > 1e-8 else np.zeros(3)
-                force = np.clip(self.explicit_external_target_force,
-                                -self.explicit_max_force, self.explicit_max_force)
-                controller_action["action.target_wrench"] = np.concatenate([force * direction, np.zeros(3)])
+                controller_action["action.target_wrench"] = self._external_wrench_along(offset)
         elif "action.position" in action and "action.orientation" in action:  # raw_actions mode
             self.last_compliance_stiffness = action["action.stiffness_diag"][0]
             controller_action = action
+            if self.explicit_wrench and self.explicit_force_source == "external":
+                # extra setpoint on top of the unchanged command: the fixed target
+                # along the tracking error, since a raw action has no ref pose
+                offset = np.asarray(action["action.position"], dtype=float) - self.arm.end_effector()[:3]
+                controller_action = {
+                    **action,
+                    "action.target_wrench": self._external_wrench_along(
+                        offset, min_offset=RAW_EXPLICIT_WRENCH_MIN_OFFSET),
+                }
         else:
             raise ValueError(f"Invalid action: {action}")
         return controller_action
+
+    def _external_wrench_along(self, offset, min_offset=1e-8):
+        """The clipped external target force along ``offset``; zero below ``min_offset`` (m)."""
+        offset_norm = np.linalg.norm(offset)
+        direction = offset / offset_norm if offset_norm > min_offset else np.zeros(3)
+        force = np.clip(self.explicit_external_target_force,
+                        -self.explicit_max_force, self.explicit_max_force)
+        return np.concatenate([force * direction, np.zeros(3)])
 
     def set_compliant_control_action(self, action):
         """

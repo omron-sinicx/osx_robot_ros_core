@@ -36,6 +36,7 @@ Usage:
 
     # VT: same external command; the VT action is sent unchanged and the target
     # is added as a wrench along VT - vt_ref (force_source=external only).
+    # Pos: same, along action.position - measured eef position.
 
     # On-demand force via ROS topic (external mode):
     rostopic pub /comet/target_force std_msgs/Float32 "data: 25.0" -r 5
@@ -112,6 +113,9 @@ def main(cfg: DictConfig) -> None:
             if representation == "vt":
                 rospy.loginfo("VT checkpoint: commanding the VT action unchanged, plus the external "
                               "target along VT - vt_ref (no intent gate, no torque)")
+            elif representation == "pos":
+                rospy.loginfo("Pos checkpoint: commanding the action unchanged, plus the external "
+                              "target along action.position - eef (no intent gate, no torque)")
 
         rollout_recorder = None
         if OmegaConf.select(cfg, "eval.record_rosbag", default=False):
