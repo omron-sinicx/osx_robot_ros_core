@@ -5,7 +5,7 @@ defaults:
 
 # ================== Dataset Configuration ==================
 dataset:
-  repo_id: [wiping_02_lerobot] # name of the dataset
+  repo_id: [vial_insertion_005_lerobot] # name of the dataset
   task: "Test task" # task description
   root: /root/osx-ur/
   dir: "${.root}/data"
@@ -55,8 +55,8 @@ dataset:
   # dataset.eval_offset is applied to this pose too, the same way it is
   # applied to the policy's own commanded actions.
   use_dataset_start_pose: true
-  start_pose_repo_id:  bottle_open_0903_08_lerobot
-  start_pose_episode_idx: 0
+  start_pose_repo_id:  vial_insertion_005_lerobot
+  start_pose_episode_idx: 13   # closest to the mean start pose (6 mm off)
   start_pose_episode_idx_mode: fixed
   # start_pose_episode_idxs: null
   start_pose_random_offset_m: 0.01
@@ -88,7 +88,7 @@ dataset:
   #              connect_real_robot.launch already brings up. Needs the
   #              robotiq-cri packages built in underlay_ws.
   # Both are commanded through the same normalized [0,1] value (1=open,
-  # 0=closed), so gripper_home / start_gripper / gripper_slowdown_* / grasp_*
+  # 0=closed), so gripper_home / start_gripper / grasp_*
   # below all apply unchanged whichever one is selected.
   # NOTE: grasp_cmd_close_threshold / grasp_gap_threshold further down are tuned
   # for the claw. The Robotiq has a different stroke and stalls differently on a
@@ -146,15 +146,12 @@ dataset:
   #   record_bend_data  the npz: stamp (ROS time, the same clock the FT trace
   #     uses, so the two overlay exactly), t_rel, step, angles (T, 2N) =
   #     [twist, bend] per sensor in degrees, the baseline reading the rollout
-  #     opened with, sensor labels, and the rewind threshold in force.
+  #     opened with, and sensor labels.
   #   record_bend_plot  a 2x2 PNG: raw twist/bend angles per sensor, and their
-  #     absolute deviation from the rollout's opening reading (what the
-  #     bend-sensor rewind thresholds) with that threshold drawn in.
-  # Sampled once per control step from the same BendLabsRecorder the rewind
-  # reaction uses -- the sensors publish asynchronously on one topic each, so a
-  # per-step snapshot is what makes them a single aligned matrix. Needs
-  # uart_bridge_node.py running; recording alone brings the recorder up even
-  # with bendlab_rewind_enabled false.
+  #     absolute deviation from the rollout's opening reading.
+  # Sampled once per control step -- the sensors publish asynchronously on one
+  # topic each, so a per-step snapshot is what makes them a single aligned
+  # matrix. Needs uart_bridge_node.py running.
   record_bend_data: true
   record_bend_plot: true
 
@@ -276,7 +273,7 @@ dataset:
   # See osx_ur5e/src/osx_ur5e/pose_offset.py. The older scalar `eval_z_offset`
   # still works (treated as [0, 0, z]) but `eval_offset` wins if both are set.
   # eval_offset: [0., -0.003, 0.020]    # claw
-  eval_offset: [0., 0.0, 0.01]    # claw
+  eval_offset: [-0.0, -0.0, 0.0]    # claw
   # eval_offset: [0., -0.00, -0.09]    # robotiq
   # eval_offset: [0., -0.00, -0.10]    # robotiq
 
@@ -288,39 +285,6 @@ dataset:
   # evaluate_policy_points.py only for now (replay_pkl_episode.py still only
   # reads eval_offset, not this key). 0 = disabled.
   eval_yaw_offset_deg: 0.0
-
-  # evaluate_policy_points.py only: optional continuous (linear-ramp)
-  # stiffness during rollouts, driven by the live MLP-estimated wrist
-  # deflection -- see PoseStiffnessModulator in that script for the full
-  # mechanics. Off by default; runs every control step (independent of
-  # object tracking, unlike the policy's own actions).
-  enable_pose_stiffness: false
-  pose_stiffness_pose_topic: /estimated_pose
-  pose_stiffness_trans_near: 0.003    # m
-  pose_stiffness_trans_far: 0.015      # m
-  pose_stiffness_rot_near: 0.05
-         # rad
-  pose_stiffness_rot_far: 0.5         # rad
-  pose_stiffness_trans_min: 300.0     # N/m
-  pose_stiffness_trans_max: 1000.0    # N/m
-  pose_stiffness_rot_min: 300.0        # Nm/rad
-  pose_stiffness_rot_max: 600.0       # Nm/rad
-  pose_stiffness_min_change: 5.0      # N/m or Nm/rad; skip a stiffness update below this
-  pose_stiffness_pose_timeout: 0.5    # s; fail-safe forces max stiffness past this
-
-  # Shared by replay_pkl.py and evaluate_policy_points.py: on every gripper
-  # open<->close transition, slow the replay/rollout (not freeze it) for
-  # gripper_slowdown_duration_s seconds by multiplying the per-step sleep by
-  # gripper_slowdown_factor -- gives the slow claw a head start on
-  # reaching/making contact before the arm moves far. replay_pkl.py detects a
-  # transition from its recorded discrete gripper_states array;
-  # evaluate_policy_points.py detects one from a large step-to-step change in
-  # the policy's continuous predicted gripper command (see
-  # gripper_slowdown_change_threshold below).
-  gripper_slowdown_enabled: false
-  gripper_slowdown_factor: 20.0
-  gripper_slowdown_duration_s: 0.5
-  gripper_slowdown_change_threshold: 0.4    # normalized [0,1]; |delta gripper_norm| above this counts as a transition (evaluate_policy_points.py only)
 
   # evaluate_policy_points.py only: feed the policy a *binary* gripper element
   # in observation.state (open = holding nothing, closed = holding something)
@@ -337,22 +301,11 @@ dataset:
   grasp_cmd_close_threshold: 0.8    # normalized [0,1], 0=closed; commanded pos at/below this counts as "commanded shut"
   grasp_gap_threshold: 0.2         # normalized [0,1]; measured must be this much more OPEN than commanded to count as "held open by an object" -- tune on hardware
 
-  # evaluate_policy_points.py only: when any BendLabs bend/twist sensor
-  # deviates from its start-of-episode baseline by more than
-  # bendlab_rewind_threshold, back the arm off rewind_steps control steps
-  # (replaying recorded poses in reverse at rewind_slow_factor x normal speed,
-  # opening the gripper during the retreat), clear the policy's action queue,
-  # and re-run inference from the backed-off pose. After rewind_max_attempts
-  # consecutive rewinds without rewind_clear_steps clean steps in between,
-  # hold position and abort the rollout. Sole gate for whether BendLabsRecorder
-  # gets initialized in this script (separate from use_bendlabs below, which
-  # only controls dataset logging elsewhere).
-  bendlab_rewind_enabled: false
-  bendlab_rewind_threshold: 1000.0   # degrees; per-axis |current - baseline| trigger -- untested default, tune on hardware
-  rewind_steps: 15                   # control steps to back up on a trigger
-  rewind_slow_factor: 4.0            # backup replayed at this x the normal per-step duration
-  rewind_max_attempts: 3             # consecutive rewinds (see rewind_clear_steps) before hold/abort
-  rewind_clear_steps: 15             # consecutive clean steps that reset the attempt counter
+  # evaluate_policy_points.py only: inference-time policy options (no retraining).
+  temporal_ensemble_coeff: 0.01   # ACT temporal ensembling; forces n_action_steps=1. null = checkpoint's own setting
+  n_action_steps: null            # actions executed per chunk (<= chunk_size); needs temporal_ensemble_coeff: null
+  drop_env_keypoints: []          # keypoint indices to drop; must match convert_pkl_to_lerobot.py --drop_keypoints
+  env_state_offset: null          # TEMPORARY workaround: offset (m) added to environment_state -- [dx, dy, dz] or one per kept dim
 
   use_bendlabs: true
   num_bendlabs_sensors: 4

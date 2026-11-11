@@ -14,9 +14,16 @@ extraction, no ffmpeg re-encode pass.
 Prerequisite: camera_bringup.launch (or equivalent) must already be running
 so that /wrist_camera/... and /front_camera/... topics are publishing.
 
+Each saved demo also gets a calibration.npy: live intrinsics/distortion per
+camera (from its camera_info topic) merged with extrinsics from --calib_path
+(no live ROS topic for hand-eye extrinsics), same {'int','ext','dist_coeff'}
+layout as calib/calib.npy.
+
 Usage:
     rosrun osx_ur5e collect_image_data.py --task_name pick_cup
     rosrun osx_ur5e collect_image_data.py --task_name pick_cup --depth
+    rosrun osx_ur5e collect_image_data.py --task_name pick_cup --calib_path /path/to/calib.npy
+    rosrun osx_ur5e collect_image_data.py --task_name pick_cup --cam_namespaces front_camera
 
 Controls (OpenCV window must have focus):
     SPACE / ENTER  — start recording a new demo
@@ -30,7 +37,6 @@ import pickle as pkl
 from pathlib import Path
 
 import cv2
-import matplotlib
 import numpy as np
 import pandas as pd
 import rospy
@@ -40,22 +46,19 @@ DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "collect_image_data_config.yaml"
 )
 
+# Extrinsics have no live ROS topic (they come from the offline hand-eye solve
+# in osx_camera_calibration), so this is the only source for them. Intrinsics
+# are read live from each camera's camera_info topic instead of from here,
+# since that's always in sync with whatever firmware/resolution is actually
+# streaming.
+DEFAULT_CALIB_PATH = "/root/osx-ur/dependencies/Point-Policy/calib/calib.npy"
+
 # cam_1/cam_2 identity must match calib/calib.npy (see collect_data_config.yaml
-# and collect_image_data_config.yaml for the full explanation). Index 0 -> cam_1,
-# index 1 -> cam_2.
-CAM_IDS = [1, 2]
-
-
-# ---------------------------------------------------------------------------
-# Depth utilities (ported verbatim from ur5e_pipeline/collect_data_realsense.py)
-# ---------------------------------------------------------------------------
-def _fill_depth_holes(depth_m: np.ndarray, max_hole_radius: int = 4) -> np.ndarray:
-    """Fill small depth holes (0.0 pixels) via dilation of valid neighbours."""
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (2 * max_hole_radius + 1, 2 * max_hole_radius + 1)
-    )
-    dilated = cv2.dilate(depth_m, kernel)
-    return np.where(depth_m == 0.0, dilated, depth_m)
+# and collect_image_data_config.yaml for the full explanation): cam_1 =
+# wrist_camera, cam_2 = front_camera. Fixed by namespace, not list position,
+# so temporarily dropping one camera (e.g. --cam_namespaces front_camera)
+# doesn't relabel the other.
+NAMESPACE_TO_CAM_ID = {"wrist_camera": 1, "front_camera": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -90,15 +93,17 @@ def _imgmsg_to_depth_mono16(msg) -> np.ndarray:
 # ---------------------------------------------------------------------------
 class RosCamera:
     def __init__(self, namespace: str, collect_depth: bool):
-        from sensor_msgs.msg import Image
+        from sensor_msgs.msg import CameraInfo, Image
 
         self.namespace = namespace
         self.collect_depth = collect_depth
         self.color_image = None
         self.color_timestamp = None
         self.depth_image = None
+        self.camera_info = None
 
         rospy.Subscriber(f"/{namespace}/color/image_raw", Image, self._color_cb)
+        rospy.Subscriber(f"/{namespace}/color/camera_info", CameraInfo, self._info_cb)
         if collect_depth:
             rospy.Subscriber(
                 f"/{namespace}/aligned_depth_to_color/image_raw", Image, self._depth_cb
@@ -109,16 +114,33 @@ class RosCamera:
         self.color_timestamp = msg.header.stamp.to_sec() * 1000.0  # ms
 
     def _depth_cb(self, msg):
-        depth_raw = _imgmsg_to_depth_mono16(msg)
-        depth_m = depth_raw.astype(np.float32) / 1000.0
-        self.depth_image = _fill_depth_holes(depth_m)
+        # Keep the raw uint16 depth exactly as published (no unit conversion,
+        # no hole filling, no normalization) so saved depth matches the
+        # camera's original values bit-for-bit.
+        self.depth_image = _imgmsg_to_depth_mono16(msg)
+
+    def _info_cb(self, msg):
+        self.camera_info = msg
 
     def ready(self) -> bool:
         if self.color_image is None:
             return False
+        if self.camera_info is None:
+            return False
         if self.collect_depth and self.depth_image is None:
             return False
         return True
+
+    def intrinsics(self) -> dict:
+        """Live camera_info -> calib.npy-style {'int', 'dist_coeff'} dict."""
+        msg = self.camera_info
+        return {
+            "int": np.array(msg.K, dtype=np.float64).reshape(3, 3),
+            "dist_coeff": np.array(msg.D, dtype=np.float64).reshape(1, -1),
+            "width": msg.width,
+            "height": msg.height,
+            "distortion_model": msg.distortion_model,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +159,17 @@ def parse_args():
     p.add_argument("--data_dir", default=None, help="Root data directory")
     p.add_argument("--depth", action="store_true", help="Enable depth recording (off by default)")
     p.add_argument("--fps", type=int, default=None)
+    p.add_argument(
+        "--calib_path", type=str, default=None,
+        help="calib.npy providing per-camera extrinsics (and fallback intrinsics). "
+             f"Defaults to {DEFAULT_CALIB_PATH}."
+    )
+    p.add_argument(
+        "--cam_namespaces", type=str, default=None,
+        help="Comma-separated subset of camera namespaces to record this run, e.g. "
+             "'front_camera' to temporarily skip the wrist camera. Defaults to the "
+             "config's full cam_namespaces list."
+    )
     args = p.parse_args(rospy.myargv()[1:])
 
     cfg = {}
@@ -146,11 +179,23 @@ def parse_args():
 
     for key, cfg_key in [
         ("task_name", "task_name"), ("data_dir", "data_dir"), ("fps", "fps"),
+        ("calib_path", "calib_path"),
     ]:
         if getattr(args, key) is None and cfg.get(cfg_key) is not None:
             setattr(args, key, cfg[cfg_key])
+    if args.calib_path is None:
+        args.calib_path = DEFAULT_CALIB_PATH
 
-    args.cam_namespaces = cfg.get("cam_namespaces", ["wrist_camera", "front_camera"])
+    if args.cam_namespaces is not None:
+        args.cam_namespaces = [ns.strip() for ns in args.cam_namespaces.split(",")]
+    else:
+        args.cam_namespaces = cfg.get("cam_namespaces", ["wrist_camera", "front_camera"])
+
+    unknown = [ns for ns in args.cam_namespaces if ns not in NAMESPACE_TO_CAM_ID]
+    if unknown:
+        p.error(f"Unknown camera namespace(s) {unknown}; expected one of {list(NAMESPACE_TO_CAM_ID)}")
+    args.cam_ids = [NAMESPACE_TO_CAM_ID[ns] for ns in args.cam_namespaces]
+
     if args.fps is None:
         args.fps = 30
 
@@ -161,6 +206,32 @@ def parse_args():
 
     args.collect_depth = args.depth
     return args
+
+
+def build_calibration(cameras, cam_ids, calib_path: str) -> dict:
+    """Per-camera {'int', 'ext', 'dist_coeff'} dict, calib.npy-compatible.
+
+    Intrinsics/distortion come live from each camera's camera_info topic
+    (always in sync with whatever is actually streaming); extrinsics come
+    from calib_path since hand-eye calibration has no live ROS topic.
+    """
+    calib_npy = {}
+    if Path(calib_path).exists():
+        calib_npy = np.load(calib_path, allow_pickle=True).item()
+    else:
+        rospy.logwarn(
+            f"calib_path '{calib_path}' not found — saved calibration will have "
+            "no extrinsics ('ext')."
+        )
+
+    calibration = {}
+    for cid, cam in zip(cam_ids, cameras):
+        key = f"cam_{cid}"
+        entry = cam.intrinsics()
+        if key in calib_npy and "ext" in calib_npy[key]:
+            entry["ext"] = calib_npy[key]["ext"]
+        calibration[key] = entry
+    return calibration
 
 
 def get_next_demo_id(task_dir: Path) -> int:
@@ -180,18 +251,6 @@ def write_video(path: Path, frames, fps: int):
     writer.release()
 
 
-def write_depth_video(path: Path, depth_frames, fps: int):
-    """Colorized magma_r visualization, matching process_data_human.py's depth output."""
-    colormap = matplotlib.colormaps["magma_r"]
-    colorized = []
-    for frame in depth_frames:
-        min_v, max_v = frame.min(), frame.max()
-        norm = (frame - min_v) / (max_v - min_v) if max_v > min_v else np.zeros_like(frame)
-        rgb = colormap(norm, bytes=True)[:, :, :3]
-        colorized.append(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-    write_video(path, colorized, fps)
-
-
 def write_states_csv(path: Path, timestamps, n_frames: int):
     """Dummy all-zero state, one row per captured frame (image-only collection).
 
@@ -209,7 +268,7 @@ def write_states_csv(path: Path, timestamps, n_frames: int):
 
 
 def save_demo(task_dir: Path, demo_id: int, cameras, cam_ids,
-              rec_rgb, rec_ts, rec_depth, collect_depth, fps):
+              rec_rgb, rec_ts, rec_depth, collect_depth, fps, calibration):
     demo_dir = task_dir / f"demonstration_{demo_id}"
     demo_dir.mkdir(parents=True, exist_ok=True)
 
@@ -226,8 +285,8 @@ def save_demo(task_dir: Path, demo_id: int, cameras, cam_ids,
             frames = rec_depth[cid][:n_frames]
             with open(depth_dir / f"depth{cid}.pkl", "wb") as f:
                 pkl.dump(frames, f)
-            write_depth_video(depth_dir / f"depth{cid}.mp4", frames, fps)
 
+    np.save(demo_dir / "calibration.npy", calibration, allow_pickle=True)
     write_states_csv(demo_dir / "states.csv", rec_ts[cam_ids[0]][:n_frames], n_frames)
     print(f"[Demo {demo_id}] Saved {n_frames} frames to {demo_dir}")
 
@@ -235,7 +294,7 @@ def save_demo(task_dir: Path, demo_id: int, cameras, cam_ids,
 # ---------------------------------------------------------------------------
 # Main loop — continuous OpenCV event loop, state machine
 # ---------------------------------------------------------------------------
-def run(cameras, cam_ids, task_dir, collect_depth, fps):
+def run(cameras, cam_ids, task_dir, collect_depth, fps, calibration):
     """
     State machine:
         IDLE      — live feed; SPACE/ENTER starts recording
@@ -296,7 +355,7 @@ def run(cameras, cam_ids, task_dir, collect_depth, fps):
             if key in (13, 10):                 # ENTER -> save
                 print(f"[Demo {demo_id}] Saving...")
                 save_demo(task_dir, demo_id, cameras, cam_ids,
-                          rec_rgb, rec_ts, rec_depth, collect_depth, fps)
+                          rec_rgb, rec_ts, rec_depth, collect_depth, fps, calibration)
                 state = IDLE
                 print("SPACE/ENTER=next demo   Q=quit")
 
@@ -325,7 +384,7 @@ def main():
     cameras = [
         RosCamera(namespace, args.collect_depth) for namespace in args.cam_namespaces
     ]
-    for cid, ns in zip(CAM_IDS, args.cam_namespaces):
+    for cid, ns in zip(args.cam_ids, args.cam_namespaces):
         print(f"Subscribed to camera '{ns}' (cam_{cid}).")
 
     print("Waiting for cameras...")
@@ -337,7 +396,8 @@ def main():
         return
     print("All cameras ready.")
 
-    run(cameras, CAM_IDS, task_dir, args.collect_depth, args.fps)
+    calibration = build_calibration(cameras, args.cam_ids, args.calib_path)
+    run(cameras, args.cam_ids, task_dir, args.collect_depth, args.fps, calibration)
 
 
 if __name__ == "__main__":

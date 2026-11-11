@@ -17,7 +17,7 @@ stiffness_rot: 1500       # Nm/rad
 
 safety_parameters:
   max_force_torque: [70, 10]
-  max_delta_translation: 0.05
+  max_delta_translation: 0.01
   max_delta_rotation: [5.0, 5.0, 15.0]
   workspace_range:
     x: [ -0.3, 0.30]

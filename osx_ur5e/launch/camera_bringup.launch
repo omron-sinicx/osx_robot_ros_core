@@ -17,7 +17,7 @@
     <arg name="camera"            value="$(arg camera_name)"/>
     <arg name="serial_no"         value="$(arg camera_serial_no)"/>
     <arg name="tf_prefix"         value="calibrated_$(arg camera_name)"/>
-    <arg name="enable_pointcloud" value="false"/>
+    <arg name="enable_pointcloud" value="$(arg enable_depth)"/>
     <arg name="align_depth"       value="$(arg enable_depth)"/>
     <arg name="fisheye_fps"       value="$(arg camera_fps)"/>
     <arg name="depth_width"       value="$(arg camera_width)"/>
@@ -30,6 +30,7 @@
     <arg name="enable_infra2"     value="false"/>
     <arg name="initial_reset"     value="$(arg initial_reset)"/>
     <arg name="enable_depth"      value="$(arg enable_depth)"/>
+    <arg name="respawn"           value="true"/>
   </include>
 
   <arg name="camera_name2"        value="wrist_camera"/>
@@ -40,7 +41,7 @@
       <arg name="camera"            value="$(arg camera_name2)"/>
       <arg name="serial_no"         value="$(arg camera_serial_no2)"/>
       <arg name="tf_prefix"         value="calibrated_$(arg camera_name2)"/>
-      <arg name="enable_pointcloud" value="false"/>
+      <arg name="enable_pointcloud" value="$(arg enable_depth)"/>
       <arg name="align_depth"       value="$(arg enable_depth)"/>
       <arg name="fisheye_fps"       value="$(arg camera_fps)"/>
       <arg name="depth_width"       value="$(arg camera_width)"/>
@@ -53,6 +54,7 @@
       <arg name="enable_infra2"     value="false"/>
       <arg name="initial_reset"     value="$(arg initial_reset)"/>
       <arg name="enable_depth"      value="$(arg enable_depth)"/>
+      <arg name="respawn"           value="true"/>
     </include>
   </group>
 

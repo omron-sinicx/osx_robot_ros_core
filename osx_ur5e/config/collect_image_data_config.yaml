@@ -21,3 +21,8 @@ cam_namespaces:
   - "front_camera"
 
 fps: 30
+
+# calib.npy supplying per-camera extrinsics ('ext') saved alongside each demo's
+# intrinsics (read live from camera_info). See collect_image_data.py's
+# DEFAULT_CALIB_PATH for the fallback if this is left null.
+calib_path: /root/osx-ur/dependencies/Point-Policy/calib/calib.npy
