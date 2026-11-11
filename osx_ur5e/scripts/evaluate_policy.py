@@ -107,11 +107,18 @@ def main(cfg: DictConfig) -> None:
 
         explicit_wrench = resolve_explicit_wrench_config(cfg)
         if explicit_wrench is not None:
+            # the configured source: force_source=layer reaches the env as 'policy'
+            configured_source = str(OmegaConf.select(
+                cfg, "eval.explicit_wrench.force_source", default="policy"))
             representation = resolve_explicit_wrench_representation(
-                adapter.action_keys, explicit_wrench["force_source"])
+                adapter.action_keys, configured_source)
             env.set_explicit_wrench(True, **explicit_wrench)
-            if representation == "vt":
-                rospy.loginfo("VT checkpoint: commanding the VT action unchanged, plus the external "
+            if configured_source == "layer" and representation in ("vt", "pos"):
+                rospy.loginfo(f"{representation.upper()} checkpoint: the force layer reads the action "
+                              "as a factored target; commanding its ref pose plus the layer's "
+                              "f_cmd along its direction as the target wrench")
+            elif representation == "vt":
+                rospy.loginfo("VT checkpoint: commanding the VT ref pose, plus the external "
                               "target along VT - vt_ref (no intent gate, no torque)")
             elif representation == "pos":
                 rospy.loginfo("Pos checkpoint: commanding the action unchanged, plus the external "
