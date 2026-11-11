@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>osx_splines</name>
+  <version>0.0.0</version>
+  <description>
+    Robot-side environment and evaluation scripts for casp (B-spline FCT policies).
+    A copy of osx_ur5e from the spline-vel-engine branch (commit 38c00cd) that imports
+    casp instead of comet, so it can evolve independently of osx_ur5e. To be unified
+    with osx_ur5e later.
+  </description>
+
+  <maintainer email="mk.aburrub@gmail.com">malek</maintainer>
+
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>rospy</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>cv_bridge</build_depend>
+  <build_export_depend>rospy</build_export_depend>
+
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>ur_client_library</exec_depend>
+  <exec_depend>ur_robot_driver</exec_depend>
+</package>

@@ -1,0 +1,408 @@
+from casp.common.utils.vt_utils import (
+    process_factored_action_dict,
+    compute_directional_stiffness_diagonal,
+)
+from casp.common.utils.env_config_compat import (
+    resolve_cam_names,
+    resolve_control_frequency,
+    resolve_env_meta_from_config,
+)
+import rospy
+import numpy as np
+from omegaconf import DictConfig, OmegaConf
+
+from osx_splines.base_env import BaseEnv
+from osx_splines.timestep import TimeStep, STEP_MID, STEP_LAST
+from osx_splines.action_limits import limiter_from_safety_config
+from ur_control import transformations
+from ur_control.constants import CARTESIAN_COMPLIANCE_CONTROLLER
+
+
+STIFFNESS_REPRESENTATIONS = ['cholesky', 'diag']
+
+HOME_POSITION_TOLERANCE = 0.01  # m
+HOME_ORIENTATION_TOLERANCE = 0.05  # rad, per axis
+HOME_STALL_TIME = 2.0  # s without the pose error shrinking before giving up
+HOME_MIN_PROGRESS = 0.01  # improvement in normalized error that counts as progress
+
+TARGET_WRENCH_FRAMES = ("ee", "base")
+TARGET_WRENCH_WARN_N = 30.0  # |F| of a feedforward target wrench worth warning about
+
+
+class FDCCEnv(BaseEnv):
+    """
+    Forward Dynamics Compliant Control Environment
+    """
+
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        self.last_stiffness_params = np.zeros(6)
+        self.current_waypoint_index = 0
+
+        self.last_compliance_stiffness = 0.0
+
+    def load_params(self, config):
+        super().load_params(config)
+
+        # Parameters
+        self.control_frequency = resolve_control_frequency(config)
+        self.dt = 1. / self.control_frequency
+
+        self.cam_names = resolve_cam_names(config)
+        rospy.loginfo(f"Cameras to record from: {self.cam_names}")
+        self.controller_config = config.controller
+        self.max_force_torque = self.controller_config.safety_parameters.max_force_torque
+        self.translation_stiffness_limits = self.controller_config.safety_parameters.stiffness_limits.translation
+        self.rotation_stiffness_limits = self.controller_config.safety_parameters.stiffness_limits.rotation
+        self.max_delta_translation = self.controller_config.safety_parameters.max_delta_translation
+        self.max_delta_rotation = np.deg2rad(self.controller_config.safety_parameters.max_delta_rotation)
+        self.action_limiter = limiter_from_safety_config(self.controller_config.safety_parameters)
+        self.initial_config = self.controller_config.init_qpos
+
+        rospy.loginfo(f"Default stiffness: {self.controller_config.stiffness}")
+        rospy.loginfo(f"dt: {self.dt} control frequency: {self.control_frequency}")
+
+        self.actions_as_deltas = self.controller_config.actions_as_deltas
+
+        # Frame the FZI controller reads the target wrench in. The controller's own
+        # `hand_frame_control` parameter defaults to true (end_effector_link
+        # coordinates), but ur_control's CompliantController calls
+        # set_hand_frame_control(False) in its constructor, so on this robot the
+        # target wrench is read in the robot BASE frame: "base" is the default and
+        # the wrench is published unrotated. "ee" is kept only for a controller
+        # that really runs with hand_frame_control=true.
+        self.target_wrench_frame = str(
+            OmegaConf.select(config, "controller.target_wrench_frame", default="base")).lower()
+        if self.target_wrench_frame not in TARGET_WRENCH_FRAMES:
+            raise ValueError(
+                f"controller.target_wrench_frame must be one of {TARGET_WRENCH_FRAMES}, "
+                f"got '{self.target_wrench_frame}'")
+        self.last_target_wrench = np.zeros(6)
+        self._logged_target_wrench = False
+
+        self.load_characteristic_length(config)
+
+    def load_characteristic_length(self, config):
+        """Read characteristic_length from the config's ``env`` block (baked
+        into the checkpoint's eval_config.yaml at training/migration time)."""
+        self.characteristic_length = resolve_env_meta_from_config(config)
+        rospy.loginfo(f"characteristic_length={self.characteristic_length} (from eval_config.yaml)")
+
+    def set_controller_parameters(self):
+        p_gains = self.controller_config['p_gains']
+        d_gains = self.controller_config['d_gains']
+        error_scale = self.controller_config['error_scale']
+        iterations = self.controller_config['iterations']
+
+        self.arm.set_control_mode(self.controller_config.mode)
+        self.arm.update_pd_gains(p_gains, d_gains)
+        self.arm.update_selection_matrix(self.controller_config.selection_matrix)
+        self.arm.set_solver_parameters(error_scale=error_scale, iterations=iterations, publish_state_feedback=True)
+        self.arm.auto_switch_controllers = False
+        self.arm.async_mode = True
+        self.arm.zero_ft_sensor()
+
+    @property
+    def compliance_control_active(self):
+        """Whether the cartesian compliance controller is the one currently running.
+
+        ``set_cartesian_target_pose`` only publishes to that controller's
+        ``target_frame`` topic - it never switches controllers, and
+        ``auto_switch_controllers`` is off (see ``set_controller_parameters``).
+        So anything that servos in Cartesian space has to check this first.
+        """
+        return self.arm.running_controller_name == CARTESIAN_COMPLIANCE_CONTROLLER
+
+    def deactivate_compliance_control(self):
+        self.clear_target_wrench()
+        self.arm.zero_ft_sensor()
+        self.arm.activate_joint_trajectory_controller()
+
+    def activate_compliance_control(self):
+        self.action_limiter.reset()
+        self.arm.zero_ft_sensor()
+        self.arm.activate_cartesian_controller()
+
+    def reset(self, move_robot=False):
+        self.action_limiter.reset()
+        self.clear_target_wrench()
+        if move_robot:
+            self.set_controller_parameters()
+            self.arm.activate_joint_trajectory_controller()
+
+        return super().reset(move_robot=move_robot)
+
+    def move_to_home(self, timeout=5.0, max_time=30.0,
+                     position_tolerance=HOME_POSITION_TOLERANCE,
+                     orientation_tolerance=HOME_ORIENTATION_TOLERANCE,
+                     stall_time=HOME_STALL_TIME):
+        """Servo to the home Cartesian pose under compliance control until it is reached.
+
+        Returns as soon as the pose error is within tolerance. ``timeout`` is only the
+        expected duration, not a cutoff: past it the loop keeps servoing while the error
+        is still shrinking.
+
+        Raises RuntimeError if the pose stops improving for ``stall_time`` seconds or if
+        ``max_time`` runs out.
+
+        Falls back to a joint-space ``go_home()`` when compliance control is not
+        running: ``step()`` switches to the joint trajectory controller on a
+        force-violation stop, and Cartesian targets published after that go
+        nowhere - the pose error never shrinks and the stall check raises.
+        """
+        # A feedforward target wrench from the last policy step would otherwise keep
+        # pushing against the homing motion (the compliance target alone cannot
+        # overcome it) and trip the stall check a few centimetres from home.
+        self.clear_target_wrench()
+
+        if not self.compliance_control_active:
+            rospy.logwarn(
+                "Compliance control is not active (a force-violation stop switches to the "
+                "joint trajectory controller) - homing in joint space instead.")
+            self.go_home()
+            return
+
+        rospy.loginfo("Moving to home Cartesian pose under compliance control...")
+        home_cartesian_pose = self.arm.end_effector(joint_angles=self.initial_config)
+        start_time = rospy.get_time()
+        deadline = start_time + max(max_time, timeout)
+
+        best_error = np.inf
+        last_progress_time = start_time
+
+        while not rospy.is_shutdown():
+            current_pose = self.arm.end_effector()
+            delta_translation = home_cartesian_pose[:3] - current_pose[:3]
+            delta_orientation = transformations.quaternions_orientation_error(home_cartesian_pose[3:], current_pose[3:])
+
+            position_error = np.linalg.norm(delta_translation)
+            orientation_error = np.max(np.abs(delta_orientation))
+            if position_error < position_tolerance and orientation_error < orientation_tolerance:
+                rospy.loginfo(f"Reached home Cartesian pose in {rospy.get_time() - start_time:.1f}s")
+                return
+
+            now = rospy.get_time()
+            if now >= deadline:
+                raise RuntimeError(
+                    f"Failed to reach the home Cartesian pose within {max(max_time, timeout)}s: "
+                    f"position error {position_error:.4f}m, orientation error {orientation_error:.4f}rad")
+
+            error = max(position_error / position_tolerance, orientation_error / orientation_tolerance)
+            if error < best_error - HOME_MIN_PROGRESS:
+                best_error = error
+                last_progress_time = now
+            elif now - start_time > timeout:
+                # Past the expected duration, keep going only while the error keeps shrinking.
+                rospy.logwarn_once(f"Still moving to the home Cartesian pose after {timeout}s")
+                if now - last_progress_time > stall_time:
+                    raise RuntimeError(
+                        f"Motion to the home Cartesian pose stalled for {stall_time}s: "
+                        f"position error {position_error:.4f}m, orientation error {orientation_error:.4f}rad")
+
+            clipped_delta_translation, clipped_delta_orientation = self.clip_delta_actions(
+                delta_translation, delta_orientation, 0.04, 0.5)
+            target_position = current_pose[:3] + clipped_delta_translation
+            target_orientation = transformations.rotate_quaternion_by_rpy(
+                *clipped_delta_orientation, current_pose[3:])
+            target_pose = np.concatenate([target_position, target_orientation])
+            self.arm.set_cartesian_target_pose(target_pose)
+
+            self.rate.sleep()
+
+    def step(self, action) -> TimeStep:
+        # Check force/torque limits here and if needed return StepType.LAST to end episode.
+        if not self.check_contact_force_limits():
+            self.deactivate_compliance_control()
+            return TimeStep(
+                step_type=STEP_LAST,
+                reward=self.get_reward(),
+                discount=None,
+                observation=self.get_observation())
+
+        controller_action = self.prepare_action(action)
+        self.apply_target_wrench(action)
+        self.set_compliant_control_action(controller_action)
+
+        self.rate.sleep()
+
+        return TimeStep(
+            step_type=STEP_MID,
+            reward=self.get_reward(),
+            discount=None,
+            observation=self.get_observation())
+
+    def apply_target_wrench(self, action):
+        """Publish the action's optional feedforward target wrench, if it carries one.
+
+        ``action['action.target_wrench']`` is a 6D wrench in the robot BASE frame
+        (casp's spline engine, docs/bspline_fct.md 8.7). It is a feedforward only:
+        the pose reference published by ``set_compliant_control_action`` keeps
+        steering, and the FCT / VT / raw paths are untouched when the key is absent
+        - except that a wrench sent earlier is then cleared once, so a stale push
+        never outlives the action that asked for it.
+        """
+        wrench = action.get("action.target_wrench") if isinstance(action, dict) else None
+        if wrench is None:
+            if np.any(self.last_target_wrench):
+                self.send_target_wrench(np.zeros(6))
+            return
+        self.send_target_wrench(wrench)
+
+    def send_target_wrench(self, wrench):
+        """Send a base-frame 6D target wrench to the compliance controller.
+
+        The controller sums sensor wrench, target wrench and gravity and moves
+        along the result, so the target wrench is the force the robot exerts on
+        the environment (at equilibrium target = -sensor). With
+        ``controller.target_wrench_frame: base`` - the default, matching the
+        ``set_hand_frame_control(False)`` that ur_control's CompliantController
+        applies at construction - it is published as is; with ``ee`` it is
+        rotated into the end-effector frame first (``w_ee = R^T w_base``, force
+        and torque separately).
+        """
+        if not hasattr(self.arm, "set_cartesian_target_wrench"):
+            rospy.logwarn_once(
+                "This ur_control build has no set_cartesian_target_wrench(): the feedforward "
+                "target wrench is ignored")
+            return
+        wrench = np.asarray(wrench, dtype=float).reshape(6)
+        force_magnitude = float(np.linalg.norm(wrench[:3]))
+        if force_magnitude > TARGET_WRENCH_WARN_N:
+            rospy.logwarn_throttle(
+                1.0, f"Feedforward target wrench |F|={force_magnitude:.1f}N exceeds "
+                     f"{TARGET_WRENCH_WARN_N}N: check eval.inference.spline.feedforward.max_n")
+
+        command = wrench
+        if self.target_wrench_frame == "ee" and np.any(wrench):
+            rotation = transformations.rotation_matrix_from_quaternion(
+                self.arm.end_effector()[3:])[:3, :3]
+            command = np.concatenate([rotation.T @ wrench[:3], rotation.T @ wrench[3:]])
+
+        self.arm.set_cartesian_target_wrench(list(command))
+        if not self._logged_target_wrench and force_magnitude > 0.0:
+            self._logged_target_wrench = True
+            rospy.loginfo(
+                f"Feedforward target wrench active: base {np.round(wrench, 2)} -> "
+                f"{self.target_wrench_frame} frame {np.round(command, 2)}")
+        self.last_target_wrench = wrench
+
+    def clear_target_wrench(self):
+        """Zero any feedforward target wrench (never fails a reset or a controller switch)."""
+        try:
+            self.send_target_wrench(np.zeros(6))
+        except Exception as e:
+            rospy.logwarn(f"Could not clear the feedforward target wrench: {e}")
+
+    def prepare_action(self, action):
+        """
+            Prepare the action for the controller.
+        """
+        if "action.contact_direction" in action:  # FVT mode
+            self.last_compliance_stiffness = action["action.estimated_stiffness"].item()
+            controller_action = process_factored_action_dict(action,
+                                                             default_stiffness=self.controller_config.stiffness,
+                                                             default_stiffness_rot=self.controller_config.stiffness,
+                                                             characteristic_length=self.characteristic_length,
+                                                             use_isotropic_stiffness=False,
+                                                             orientation_representation="quaternion",
+                                                             full_stiffness_matrix=True)
+        elif "action.virtual_target_position" in action:  # VT mode (vt_-scoped columns)
+            self.last_compliance_stiffness = action["action.vt_estimated_stiffness"].item()
+            vt_pos = action["action.virtual_target_position"]
+            vt_rot_ortho6 = action["action.virtual_target_rotation"]
+            estimated_stiffness = action["action.vt_estimated_stiffness"]
+
+            stiffness_val = float(estimated_stiffness[0]) if np.ndim(estimated_stiffness) > 0 else float(estimated_stiffness)
+
+            if "action.vt_ref_position" in action:
+                ref_position = action["action.vt_ref_position"]
+                ref_rotation_ortho6 = action["action.vt_ref_rotation_ortho6"]
+            else:
+                current_eef = self.arm.end_effector()
+                ref_position = current_eef[:3]
+                ref_rotation_ortho6 = transformations.ortho6_from_quaternion(current_eef[3:])
+
+            stiffness_matrix = compute_directional_stiffness_diagonal(
+                position=ref_position,
+                virtual_target_position=vt_pos,
+                estimated_stiffness=stiffness_val,
+                default_stiffness=self.controller_config.stiffness,
+                default_stiffness_rot=self.controller_config.stiffness,
+                rotation_ortho6=ref_rotation_ortho6,
+                virtual_target_rotation_ortho6=vt_rot_ortho6,
+                full_stiffness_matrix=True,
+            )
+
+            vt_quat = transformations.quaternion_from_ortho6(vt_rot_ortho6)
+
+            controller_action = {
+                "action.position": vt_pos,
+                "action.orientation": vt_quat,
+                "action.stiffness_diag": stiffness_matrix,
+            }
+        elif "action.position" in action and "action.orientation" in action:  # raw_actions mode
+            self.last_compliance_stiffness = action["action.stiffness_diag"][0]
+            controller_action = action
+        else:
+            raise ValueError(f"Invalid action: {action}")
+        return controller_action
+
+    def set_compliant_control_action(self, action):
+        """
+            actions: dictionary of actions for each robot
+        """
+        stiffness_matrix = np.asarray(action['action.stiffness_diag'])
+        stiffness_flat = stiffness_matrix.flatten()
+        self.arm.update_stiffness(stiffness_flat)
+
+        action_translation = action['action.position']
+        action_rotation = action['action.orientation']
+        current_pose = self.arm.end_effector()
+        if self.actions_as_deltas:
+            assert len(action_rotation) == 3, "Rotation actions must be 3D for delta actions"
+            delta_translation, delta_orientation = self.clip_delta_actions(action_translation * self.translation_scale, action_rotation * self.rotation_scale)
+        else:  # actions are absolute positions
+            assert len(action_rotation) == 4, "Rotation actions must be quaternion (4D) for absolute actions"
+            delta_translation, delta_orientation = self.clip_delta_actions(action_translation - current_pose[:3], transformations.quaternions_orientation_error(action_rotation, current_pose[3:]))
+
+        target_position = current_pose[:3] + delta_translation
+        target_orientation = transformations.rotate_quaternion_by_rpy(*delta_orientation, current_pose[3:])
+
+        target_pose = np.concatenate([target_position, target_orientation])
+        self.arm.set_cartesian_target_pose(target_pose)
+
+        #  # slow traffic to gripper controller
+        # if rospy.get_time() - self.last_gripper_command_stamp > 0.1 and \
+        #         not math.isclose(action['action.gripper'], self.last_gripper_command, abs_tol=0.05):
+        #     self.arm.gripper.percentage_command(value=action['action.gripper'], wait=False)
+        #     self.last_gripper_command_stamp = rospy.get_time()
+        #     self.last_gripper_command = action['action.gripper']
+
+    def clip_delta_actions(self, delta_translation, delta_orientation,
+                           max_delta_translation=None, max_delta_rotation=None):
+        """
+            Clip the delta translation/orientation so the resulting motion respects the
+            configured magnitude, velocity, and acceleration limits (prevents jumps).
+
+            returns the clipped delta translation and delta orientation
+        """
+        clipped_delta_translation, clipped_delta_orientation = self.action_limiter.clip(
+            delta_translation, delta_orientation, self.dt,
+            max_delta_translation=max_delta_translation,
+            max_delta_rotation=max_delta_rotation)
+
+        triggers = self.action_limiter.last_clip_triggers
+        if triggers["translation"] or triggers["orientation"]:
+            lines = ["Delta actions clipped:"]
+            if triggers["translation"]:
+                lines.append(
+                    f"  translation ({', '.join(triggers['translation'])}): "
+                    f"{delta_translation} -> {clipped_delta_translation}")
+            if triggers["orientation"]:
+                lines.append(
+                    f"  orientation ({', '.join(triggers['orientation'])}): "
+                    f"{delta_orientation} -> {clipped_delta_orientation}")
+            rospy.logwarn_throttle(1, "\n".join(lines))
+
+        return clipped_delta_translation, clipped_delta_orientation
