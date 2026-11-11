@@ -320,7 +320,9 @@ class FDCCEnv(BaseEnv):
                 offset = np.asarray(vt_pos, dtype=float) - np.asarray(ref_position, dtype=float)
                 controller_action["action.target_wrench"] = self._external_wrench_along(offset)
                 controller_action["action.position"] = np.asarray(ref_position, dtype=float)
-                controller_action["action.orientation"] = np.asarray(transformations.quaternion_from_ortho6(ref_rotation_ortho6), dtype=float)
+                # keep the VT rotation (vt_quat): its offset from the ref is the action's only
+                # rotational intent and goes out through the rotational pose spring
+                controller_action["action.orientation"] = np.asarray(vt_quat, dtype=float)
         elif "action.position" in action and "action.orientation" in action:  # raw_actions mode
             self.last_compliance_stiffness = action["action.stiffness_diag"][0]
             controller_action = action

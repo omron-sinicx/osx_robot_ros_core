@@ -118,7 +118,7 @@ def main(cfg: DictConfig) -> None:
                               "as a factored target; commanding its ref pose plus the layer's "
                               "f_cmd along its direction as the target wrench")
             elif representation == "vt":
-                rospy.loginfo("VT checkpoint: commanding the VT ref pose, plus the external "
+                rospy.loginfo("VT checkpoint: commanding the VT ref position with the VT rotation, plus the external "
                               "target along VT - vt_ref (no intent gate, no torque)")
             elif representation == "pos":
                 rospy.loginfo("Pos checkpoint: commanding the action unchanged, plus the external "
