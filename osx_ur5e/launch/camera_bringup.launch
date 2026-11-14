@@ -12,6 +12,7 @@
   <arg name="enable_depth" default="false" />
 
 
+
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera" value="$(arg camera_name)" />
     <arg name="serial_no" value="$(arg camera_serial_no)" />
@@ -36,6 +37,19 @@
   <arg name="camera_width2" default="1280" />
   <arg name="camera_height2" default="720" />
   <arg name="camera_fps2" default="30" />
+
+  <!-- extra_camera RGB exposure. Auto-exposure over-brightens this scene, so it is
+       locked to fixed values. Tune live with rqt_reconfigure (/extra_camera/rgb_camera),
+       then copy exposure/gain here. exposure is in 0.1 ms units (max ~330 at 30 fps). -->
+  <arg name="extra_auto_exposure" default="false" />
+  <arg name="extra_exposure" default="166" />
+  <arg name="extra_gain" default="64" />
+  <param name="/$(arg camera_name2)/rgb_camera/enable_auto_exposure" value="$(arg extra_auto_exposure)" />
+  <group unless="$(arg extra_auto_exposure)">
+    <param name="/$(arg camera_name2)/rgb_camera/exposure" value="$(arg extra_exposure)" />
+    <param name="/$(arg camera_name2)/rgb_camera/gain" value="$(arg extra_gain)" />
+    <param name="/$(arg camera_name2)/rgb_camera/brightness" value="0" />
+  </group>
 
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera" value="$(arg camera_name2)" />
