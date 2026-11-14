@@ -203,6 +203,17 @@ if __name__ == "__main__":
         resume_dir = None
     if "hydra.run.dir" not in " ".join(sys.argv):
         # Everything (hydra files, logs, eval artifacts) lands under the checkpoint.
-        run_dir = resume_dir or "${eval.base.load_ckpt}/eval/${now:%Y-%m-%d_%H-%M-%S}"
+        # eval.dir_prefix=FDCC_35N_HeavyObject -> eval/FDCC_35N_HeavyObject-<timestamp>.
+        # Hydra's override grammar rejects nested ${...}, so the resolver takes the
+        # key name and selects it from the root itself.
+        def _eval_dir_prefix(key: str, *, _root_) -> str:
+            prefix = OmegaConf.select(_root_, key, default="")
+            return f"{prefix}-" if prefix else ""
+
+        OmegaConf.register_new_resolver("eval_dir_prefix", _eval_dir_prefix, replace=True)
+        run_dir = resume_dir or (
+            "${eval.base.load_ckpt}/eval/"
+            "${eval_dir_prefix:eval.dir_prefix}${now:%Y-%m-%d_%H-%M-%S}"
+        )
         sys.argv.append(f"hydra.run.dir={run_dir}")
     main()
