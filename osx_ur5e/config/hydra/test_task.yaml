@@ -2,6 +2,12 @@ defaults:
   - controller: ur5e
   - _self_
 
+# Hydra's own run folder (logs, .hydra/, plots of data_collection / replay_* scripts): under <osx-ur>/outputs
+# instead of outputs/ relative to wherever the script was launched.
+hydra:
+  run:
+    dir: ${dataset.root}/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 
 # ================== Dataset Configuration ==================
 dataset:
@@ -151,7 +157,7 @@ dataset:
   #     absolute deviation from the rollout's opening reading.
   # Sampled once per control step -- the sensors publish asynchronously on one
   # topic each, so a per-step snapshot is what makes them a single aligned
-  # matrix. Needs uart_bridge_node.py running.
+  # matrix. Needs sensor_bridge_node.py running.
   record_bend_data: true
   record_bend_plot: true
 

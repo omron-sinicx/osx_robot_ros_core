@@ -22,6 +22,11 @@ from ur_control.math_utils import quaternion_from_axis_angle, quaternions_orient
 from osx_claw.claw_controller import ClawController
 from bendlabs.bendlabs_recorder import BendLabsRecorder
 
+# Recorded sessions: <osx-ur>/data/force_deformation_data/<session>/ (shared with bendlabs'
+# wrench_2_fit_linear.py and wrench_3_plot_sessions.py).
+DATA_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "..", "..", "..", "..", "..", "..", "data", "force_deformation_data"))
+
 
 def quaternion_to_euler(quaternion):
     """Convert quaternion to Euler angles in radians."""
@@ -81,7 +86,7 @@ class DeformationMeasurement:
     # ================================================================
     
     def __init__(self):
-        rospy.init_node("deformation_measurement", anonymous=True)
+        rospy.init_node("wrench_1_record_scripted", anonymous=True)
 
         # Load robot configuration
         self.use_default_config()
@@ -471,8 +476,7 @@ class DeformationMeasurement:
         ax3.set_ylabel('Position Z (m)')
 
         plt.tight_layout()
-        plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "../force_deformation_data/force_position_plot.png"))
+        plt.savefig(os.path.join(DATA_ROOT, "force_position_plot.png"))
         plt.show()
 
     def run_deformation_test(self, direction="z"):
@@ -831,8 +835,7 @@ class DeformationMeasurement:
         plt.tight_layout()
 
         # Create directory if it doesn't exist
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
 
@@ -1004,8 +1007,7 @@ class DeformationMeasurement:
             folder_name = f"deformation_test_{timestamp}"
 
         # Create the main folder
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
 
@@ -1071,8 +1073,7 @@ class DeformationMeasurement:
             filename = f"deformation_data_{timestamp}.csv"
 
         # Create directory if it doesn't exist
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
 
@@ -1185,8 +1186,7 @@ class DeformationMeasurement:
         import os
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         
         if os.path.exists(data_dir):
             csv_files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
@@ -1201,8 +1201,7 @@ class DeformationMeasurement:
 
     def create_combined_visualization(self, folder_name):
         """Create combined visualizations of all test data."""
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
 
         # Find all CSV files in the folder
         csv_files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]

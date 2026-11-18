@@ -981,7 +981,7 @@ def make_bendlabs(ds):
     while not bendlabs.sensors_ready() and not rospy.is_shutdown():
         if time.perf_counter() > deadline:
             logger.warning(
-                "Timed out waiting for BendLabs sensors -- is uart_bridge_node running? "
+                "Timed out waiting for BendLabs sensors -- is sensor_bridge_node running? "
                 "Disabling bend-sensor recording for this run."
             )
             return None
@@ -1284,7 +1284,10 @@ def main():
             "policy checkpoint directory (not e.g. its parent outputs/train/ dir)?"
         )
 
+    # Relative paths (and the default) are under <osx-ur>/outputs, wherever the script is launched from.
     output_dir = Path(args.output_dir) if args.output_dir else Path("outputs/eval") / policy_path.name
+    if not output_dir.is_absolute():
+        output_dir = Path(__file__).resolve().parents[5] / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(output_dir / "evaluation.log")
 

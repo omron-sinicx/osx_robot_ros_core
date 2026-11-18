@@ -463,7 +463,7 @@ def main(cfg: DictConfig) -> None:
         while not bendlabs.sensors_ready() and not rospy.is_shutdown():
             if time.perf_counter() > deadline:
                 log.error(
-                    "Timed out waiting for BendLabs sensors. Check that uart_bridge_node is running.")
+                    "Timed out waiting for BendLabs sensors. Check that sensor_bridge_node is running.")
                 sys.exit(1)
             rospy.sleep(0.1)
         log.info("BendLabs sensors ready.")

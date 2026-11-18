@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 # Registers the "custom_act" policy config in lerobot's PreTrainedConfig
@@ -86,6 +87,11 @@ def train_lerobot():
         batch_size=args.batch_size if args.batch_size is not None else 8,
         wandb=WandBConfig(enable=args.wandb_enable),
         resume=args.resume,
+        # LeRobot's default is outputs/train/<date>/<time>_<job> relative to the launch directory;
+        # keep every run under <osx-ur>/outputs/train instead (resume uses the saved run config).
+        output_dir=None if args.resume else (
+            Path(__file__).resolve().parents[5] / "outputs" / "train"
+            / datetime.now().strftime(f"%Y-%m-%d/%H-%M-%S_{job_name}")),
     )
     cfg.validate()
     train(cfg)

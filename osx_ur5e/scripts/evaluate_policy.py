@@ -392,8 +392,10 @@ def main():
     args = parse_args()
 
     policy_path = Path(args.policy_path)
-    output_dir = Path(args.output_dir) if args.output_dir else Path(
-        "outputs/eval") / policy_path.name
+    # Relative paths (and the default) are under <osx-ur>/outputs, wherever the script is launched from.
+    output_dir = Path(args.output_dir) if args.output_dir else Path("outputs/eval") / policy_path.name
+    if not output_dir.is_absolute():
+        output_dir = Path(__file__).resolve().parents[5] / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     setup_logging(output_dir / "evaluation.log")
@@ -573,7 +575,7 @@ def main():
         while not bendlabs.sensors_ready() and not rospy.is_shutdown():
             if time.perf_counter() > deadline:
                 logger.error(
-                    "Timed out waiting for BendLabs sensors. Check that uart_bridge_node is running.")
+                    "Timed out waiting for BendLabs sensors. Check that sensor_bridge_node is running.")
                 sys.exit(1)
             rospy.sleep(0.1)
         logger.info("BendLabs sensors ready.")

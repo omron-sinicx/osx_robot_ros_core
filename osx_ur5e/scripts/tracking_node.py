@@ -71,14 +71,14 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger, TriggerResponse
 
-# Point-Policy's point_utils (DIFT + TAPIR tracking) and franka/utils.py
+# Point-Policy's point_utils (DIFT + TAPIR tracking) and robot_utils/ur5e/utils.py
 # (triangulate_points) -- not installed as packages, so add their
 # directories to sys.path, matching evaluate_policy_points.py's convention.
 POINT_POLICY_ROOT = Path("/root/osx-ur/dependencies/Point-Policy/point_policy")
 sys.path.insert(0, str(POINT_POLICY_ROOT))
-sys.path.insert(0, str(POINT_POLICY_ROOT / "robot_utils" / "franka"))
+sys.path.insert(0, str(POINT_POLICY_ROOT / "robot_utils" / "ur5e"))
 from point_utils.points_class import PointsClass  # noqa: E402
-from utils import triangulate_points  # noqa: E402 -- franka/utils.py
+from utils import triangulate_points  # noqa: E402 -- robot_utils/ur5e/utils.py
 
 logger = logging.getLogger(__name__)
 console = Console()

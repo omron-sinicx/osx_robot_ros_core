@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Collect a sensors -> wrench dataset by moving the soft wrist through ALL of
-deformation_measurement.py's scripted directions plus RANDOM motion, recording
+wrench_1_record_scripted.py's scripted directions plus RANDOM motion, recording
 the wrench topic and the BendLabs sensor values to CSV.
 
-This is a standalone COPY of deformation_measurement.py, deliberately not a
+This is a standalone COPY of wrench_1_record_scripted.py, deliberately not a
 subclass: that file is known-good and stays untouched, so nothing here can change
 how it behaves. The additions over the original are:
 
@@ -26,15 +26,15 @@ The per-sweep zero_ft_sensor() of the original is kept. It is load-bearing: the
 compliance controller servos on that wrench, and skipping it leaves a standing
 bias that -- because each target is built from the measured pose -- integrates
 into large uncommanded drift. Each CSV therefore has its own wrench origin, which
-is why prepare_force_dataset.py baselines per file.
+is why bendlabs' wrench_2_fit_linear.py baselines per file.
 
 Usage:
     # off-hardware: check the random sampler against every threshold, no robot
-    rosrun osx_ur5e collect_force_dataset.py --dry_run --self_test
+    rosrun osx_ur5e wrench_1_record.py --dry_run --self_test
 
-    rosrun osx_ur5e collect_force_dataset.py                      # full session
-    rosrun osx_ur5e collect_force_dataset.py --schedule "scripted:z random:30"
-    rosrun osx_ur5e collect_force_dataset.py --interactive        # original menu
+    rosrun osx_ur5e wrench_1_record.py                      # full session
+    rosrun osx_ur5e wrench_1_record.py --schedule "scripted:z random:30"
+    rosrun osx_ur5e wrench_1_record.py --interactive        # original menu
 """
 
 import argparse
@@ -58,6 +58,11 @@ from ur_control import transformations
 from ur_control.math_utils import quaternion_from_axis_angle, quaternions_orientation_error
 from osx_claw.claw_controller import ClawController
 from bendlabs.bendlabs_recorder import BendLabsRecorder
+
+# Recorded sessions: <osx-ur>/data/force_deformation_data/<session>/ (shared with bendlabs'
+# wrench_2_fit_linear.py and wrench_3_plot_sessions.py).
+DATA_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "..", "..", "..", "..", "..", "..", "data", "force_deformation_data"))
 
 
 def quaternion_to_euler(quaternion):
@@ -295,7 +300,7 @@ class ForceDatasetCollector:
     # ================================================================
     
     def __init__(self, args=None):
-        rospy.init_node("collect_force_dataset", anonymous=True)
+        rospy.init_node("wrench_1_record", anonymous=True)
         self.args = args if args is not None else build_parser().parse_known_args()[0]
 
         # Load robot configuration
@@ -686,8 +691,7 @@ class ForceDatasetCollector:
         ax3.set_ylabel('Position Z (m)')
 
         plt.tight_layout()
-        plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "../force_deformation_data/force_position_plot.png"))
+        plt.savefig(os.path.join(DATA_ROOT, "force_position_plot.png"))
         plt.show()
 
     def run_deformation_test(self, direction="z"):
@@ -1057,8 +1061,7 @@ class ForceDatasetCollector:
         plt.tight_layout()
 
         # Create directory if it doesn't exist
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
 
@@ -1230,8 +1233,7 @@ class ForceDatasetCollector:
             folder_name = f"deformation_test_{timestamp}"
 
         # Create the main folder
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
 
@@ -1303,8 +1305,7 @@ class ForceDatasetCollector:
             filename = f"deformation_data_{timestamp}.csv"
 
         # Create directory if it doesn't exist
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
 
@@ -1420,8 +1421,7 @@ class ForceDatasetCollector:
         import os
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         
         if os.path.exists(data_dir):
             csv_files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
@@ -1436,8 +1436,7 @@ class ForceDatasetCollector:
 
     def create_combined_visualization(self, folder_name):
         """Create combined visualizations of all test data."""
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
 
         # Find all CSV files in the folder
         csv_files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
@@ -1826,8 +1825,7 @@ class ForceDatasetCollector:
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         folder_name = custom_folder_name or f"force_dataset_{timestamp}"
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../force_deformation_data", folder_name)
+        data_dir = os.path.join(DATA_ROOT, folder_name)
         os.makedirs(data_dir, exist_ok=True)
 
         if not self.args.skip_ft_check and not self.check_ft_alive():
