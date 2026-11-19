@@ -62,14 +62,20 @@ class DeltaActionLimiter:
         self.last_clip_triggers = {"translation": [], "orientation": []}
 
     def clip(self, delta_translation, delta_orientation, dt,
-             max_delta_translation=None, max_delta_rotation=None):
+             max_delta_translation=None, max_delta_rotation=None, *, enforce_acceleration=True):
         """Return velocity/acceleration-limited copies of the input deltas.
 
         ``max_delta_translation`` / ``max_delta_rotation`` optionally override the
         configured magnitude limits for this call (e.g. slower homing moves).
+        enforce_acceleration=False skips acceleration only; magnitude and velocity
+        limits still apply, and the accepted velocity remains the next step's history.
         """
         delta_translation = np.asarray(delta_translation, dtype=float)
         delta_orientation = np.asarray(delta_orientation, dtype=float)
+        if (delta_translation.shape != (3,) or delta_orientation.shape != (3,) or
+                not np.isfinite(delta_translation).all() or not np.isfinite(delta_orientation).all() or
+                not np.isfinite(dt) or dt <= 0):
+            raise ValueError('FINITE_LIMITER_INPUT_AND_POSITIVE_DT_REQUIRED')
 
         if max_delta_translation is None:
             max_delta_translation = self.max_delta_translation
@@ -78,11 +84,11 @@ class DeltaActionLimiter:
 
         clipped_translation, self._prev_linear_velocity, trans_triggers = self._clip_axis(
             delta_translation, dt, max_delta_translation,
-            self.max_linear_velocity, self.max_linear_acceleration,
+            self.max_linear_velocity, self.max_linear_acceleration if enforce_acceleration else None,
             self._prev_linear_velocity)
         clipped_orientation, self._prev_angular_velocity, ori_triggers = self._clip_axis(
             delta_orientation, dt, max_delta_rotation,
-            self.max_angular_velocity, self.max_angular_acceleration,
+            self.max_angular_velocity, self.max_angular_acceleration if enforce_acceleration else None,
             self._prev_angular_velocity)
         self.last_clip_triggers = {
             "translation": trans_triggers,

@@ -31,7 +31,8 @@ limits:                                 # applied to every commanded step (teleo
   max_linear_acceleration: 0.5          # m/s^2 per axis
   max_angular_velocity_deg: 30.0        # deg/s per axis
   max_angular_acceleration_deg: 180.0   # deg/s^2 per axis
-  max_tracking_error: 0.02              # commanded steps may not put the target further than this from the measured position
+  max_tracking_error: 0.02              # manual/Home target-to-measured lead cap
+  policy_tracking_cap_enabled: false   # POLICY default: no target-to-measured lead cap
   workspace:                            # box for the commanded tool0 position
     x: [-0.25, 0.25]
     y: [0.21, 0.71]
@@ -42,7 +43,12 @@ safety:
   max_torque: 5.0                       # Nm
 
 home:
-  joints: [1.3617, -1.5785, 1.2242, -1.2158, -1.5637,   0.7487]
+  # Active 2026-11-05: TEST_HOME_20261105_04, measured 14:07:54 JST.
+  # Source: configs/rri/local/test-home-20261105_04.json (joints + driver TF evidence).
+  # The controller uses FK of these joints in base_link/tool0; the saved driver TF
+  # remains base/tool0_controller in robot-home.json, not a copied control-frame pose.
+  # partner_home / 夥伴位置: configs/rri/local/home-backups/20261029_before_10_28_temp_home/control_fdcc.yaml
+  joints: [1.2509270906448364, -1.0848901134780427, 0.7676413694964808, -1.2516630750945588, -1.5621627012835901, 0.49594929814338684]
   max_linear_speed: 0.03                # m/s
   max_angular_speed_deg: 10.0           # deg/s
   position_tolerance: 0.002

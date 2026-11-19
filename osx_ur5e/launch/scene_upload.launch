@@ -1,13 +1,17 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="gazebo" default="false"/>
+  <!-- ur_common.launch supplies the connected robot's kinematics file here. -->
+  <arg name="kinematics_params" default="$(find ur_description)/config/ur5e/default_kinematics.yaml"/>
+  <!-- Preserve legacy callers that explicitly pass an empty string. -->
+  <arg name="effective_kinematics_params" value="$(eval arg('kinematics_params').strip() or find('ur_description') + '/config/ur5e/default_kinematics.yaml')"/>
   <!-- This file is used by MoveIt. -->
   <param name="robot_description" command="$(find xacro)/xacro
                                           '$(find osx_ur5e)/urdf/scene.urdf.xacro'
                                           gazebo:=$(arg gazebo)
+                                          kinematics_parameters_file:=$(arg effective_kinematics_params)
                                           " />
 
   <!-- These args are declared so the UR upload script does not complain. -->
   <arg name="limited" default=""/>
-  <arg name="kinematics_params" default=""/>
 </launch>

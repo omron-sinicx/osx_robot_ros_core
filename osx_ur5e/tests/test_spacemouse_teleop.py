@@ -120,6 +120,7 @@ class ConstantPolicy(Policy):
         self.delta = np.asarray(delta, dtype=float)
         self.acts = 0
         self.resets = 0
+        self.deactivations = []
 
     def reset(self, state):
         self.resets += 1
@@ -127,6 +128,9 @@ class ConstantPolicy(Policy):
     def act(self, state):
         self.acts += 1
         return self.delta
+
+    def deactivate(self, reason="released"):
+        self.deactivations.append(reason)
 
 
 def wait_for(condition, timeout=1.0):
@@ -300,17 +304,22 @@ class TestTargetTracker(unittest.TestCase):
 
 
 class TestController(unittest.TestCase):
-    def make(self, start=HOME, policy=None, arm_class=FakeArm, cfg=CFG):
+    def make(self, start=HOME, policy=None, arm_class=FakeArm, cfg=CFG, policy_trigger="left-hold"):
         self.arm = arm_class(start)
         self.mouse = FakeMouse()
+        self.now = 0.
         self.controller = smc.SpaceMouseController(cfg, self.arm, self.mouse, policy=policy,
-                                                   clock=time.monotonic)
+                                                   clock=lambda:self.now, policy_trigger=policy_trigger)
         self.controller.tracker.reanchor(start)
 
     def ticks(self, n, **mouse):
         self.mouse.set(**mouse)
         for _ in range(n):
             self.controller.tick()
+            self.now += DT
+
+    def enter_policy(self):
+        self.ticks(22, left=True)
 
     def test_teleop_speed_capped_by_limits(self):
         self.make()
@@ -402,11 +411,119 @@ class TestController(unittest.TestCase):
         policy = ConstantPolicy([0.0022, 0, 0, 0, 0, 0])
         self.make(policy=policy)
         ticks_per_act = round(policy.period_s * CFG["control"]["rate_hz"])
-        self.ticks(4 * ticks_per_act, left=True)
+        self.ticks(20 + 4 * ticks_per_act, left=True)
         self.assertEqual(policy.resets, 1)
         self.assertEqual(policy.acts, 4)
         self.assertGreater(self.arm.pose[0], HOME[0])
         self.assertLessEqual(self.arm.pose[0] - HOME[0], 4 * 0.0022 + 1e-9)
+
+    def test_policy_release_clears_remaining_delta_and_next_press_resets(self):
+        policy = ConstantPolicy([.0022, 0, 0, 0, 0, 0])
+        self.make(policy=policy)
+        self.enter_policy()
+        held = self.arm.pose.copy()
+        self.ticks(20)
+        np.testing.assert_allclose(self.arm.pose, held)
+        self.assertEqual(policy.deactivations, ['teleop'])
+        self.enter_policy()
+        self.assertEqual(policy.resets, 2)
+
+    def test_home_and_fault_deactivate_policy(self):
+        policy = ConstantPolicy(np.zeros(6))
+        self.make(policy=policy)
+        self.enter_policy()
+        self.ticks(1, left=True, right=True)
+        self.assertEqual(policy.deactivations, ['homing'])
+        self.ticks(1)
+        self.enter_policy()
+        self.ticks(1, left=True, connected=False)
+        self.assertEqual(policy.deactivations, ['homing', 'fault'])
+
+    def test_policy_exception_and_bad_shape_hold_measured_pose(self):
+        class BrokenPolicy(ConstantPolicy):
+            def act(self, state):
+                raise RuntimeError('receiver timeout')
+        for policy in (BrokenPolicy(np.zeros(6)), ConstantPolicy([1, 2, 3]),
+                       ConstantPolicy([float('nan'), 0, 0, 0, 0, 0])):
+            with self.subTest(policy=policy):
+                self.make(policy=policy)
+                self.enter_policy()
+                self.assertIs(self.controller.mode, smc.Mode.FAULT)
+                np.testing.assert_allclose(self.arm.pose, HOME)
+                self.assertEqual(policy.deactivations, ['fault'])
+
+    def test_staggered_home_press_and_release_never_start_policy(self):
+        for left_first in (True, False):
+            for left_released_first in (True, False):
+                with self.subTest(left_first=left_first, left_released_first=left_released_first):
+                    policy = ConstantPolicy(np.zeros(6))
+                    self.make(policy=policy)
+                    self.ticks(3, left=left_first, right=not left_first)
+                    self.ticks(10, left=True, right=True)
+                    self.assertIs(self.controller.mode, smc.Mode.HOMING)
+                    self.ticks(50, left=not left_released_first, right=left_released_first)
+                    self.assertIs(self.controller.mode, smc.Mode.BUTTON_WAIT)
+                    self.ticks(2)
+                    self.assertEqual(policy.resets, 0)
+                    self.assertEqual(policy.acts, 0)
+                    self.assertEqual(self.arm.zero_count, 0)
+                    self.enter_policy()
+                    self.assertEqual(policy.resets, 1)
+
+    def test_brief_solo_left_does_not_create_policy_episode(self):
+        policy = ConstantPolicy(np.zeros(6))
+        self.make(policy=policy)
+        self.ticks(10, left=True)
+        self.ticks(10)
+        self.assertEqual(policy.resets, 0)
+        np.testing.assert_allclose(self.arm.pose, HOME)
+
+
+class PolicyArgumentsTests(unittest.TestCase):
+    def test_missing_masked_weights_fail_before_mouse_ros_or_arm(self):
+        from unittest.mock import patch
+        with patch.object(smc.rospy,'myargv',return_value=['spacemouse','--system','dual_heatmap_masked']), \
+             patch.object(smc,'preflight_selected_policy',side_effect=ValueError('MASKED_PREFLIGHT_FAILED')) as preflight, \
+             patch.object(smc,'SpaceMouse') as mouse, patch.object(smc.rospy,'init_node') as node, \
+             patch.object(smc,'CompliantController') as arm, patch.object(smc,'load_selected_policy') as load:
+            with self.assertRaisesRegex(ValueError,'MASKED_PREFLIGHT_FAILED'):
+                smc.main()
+        preflight.assert_called_once()
+        for callback in (mouse,node,arm,load):callback.assert_not_called()
+
+    def test_one_system_option_selects_each_policy_without_legacy_flags(self):
+        for system in ('student', 'dual_heatmap', 'dual_heatmap_masked', 'student_flip'):
+            args = smc.parse_arguments(['--system', system])
+            self.assertEqual(args.system, system)
+            self.assertIsNone(args.policy_config)
+            self.assertIsNone(args.profile)
+            self.assertEqual(args.videomode, '2d')
+        self.assertIsNone(smc.parse_arguments([]).system)
+
+    def test_3d_video_routes_to_bridge_without_changing_system(self):
+        from unittest.mock import Mock, patch
+        for system in ('student', 'dual_heatmap', 'dual_heatmap_masked', 'student_flip'):
+            args = smc.parse_arguments(['--system',system,'--videomode','3d'])
+            bridge = Mock()
+            with patch.object(smc,'policy_bridge',return_value=bridge):
+                smc.load_selected_policy(args)
+            bridge.load_policy.assert_called_once_with(None,profile=None,
+                execute_native=False,system=system,teacher='teacher_85grip',videomode='3d',
+                d1_peg_depth_mode=None,startup_preview=None)
+
+    def test_3d_requires_recorded_system_before_hardware(self):
+        from contextlib import redirect_stderr
+        import io
+        for options in ([],['--mouse-only'],['--policy-config','unused.json']):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                smc.parse_arguments(options+['--videomode','3d'])
+
+    def test_conflicting_policy_modes_fail_before_hardware_construction(self):
+        from contextlib import redirect_stderr
+        import io
+        for options in (['--mouse-only'], ['--profile', 'train100_native'], ['--execute-native-policy']):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                smc.parse_arguments(['--system', 'student'] + options)
 
 
 if __name__ == "__main__":

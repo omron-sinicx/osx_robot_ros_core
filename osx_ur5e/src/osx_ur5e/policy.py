@@ -30,5 +30,8 @@ class Policy:
         """Return the (6,) delta for one period: base_link translation [m], rotation vector [rad]."""
         raise NotImplementedError
 
+    def deactivate(self, reason: str = "released") -> None:
+        """Cancel pending work on release, homing, tare or fault; must not block."""
+
     def close(self) -> None:
         """Release models and subscriptions."""
